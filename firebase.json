@@ -1,0 +1,32 @@
+{
+	"functions": {
+		"source": "functions"
+	},
+	"firestore": {
+		"rules": "firestore.rules"
+	},
+	"storage": {
+		"rules": "storage.rules"
+	},
+	"flutter": {
+		"platforms": {
+			"android": {
+				"default": {
+					"projectId": "expresscar-75596",
+					"appId": "1:464359073979:android:32fbe74d557e883ec4a19e",
+					"fileOutput": "android/app/google-services.json"
+				}
+			},
+			"dart": {
+				"lib/firebase_options.dart": {
+					"projectId": "expresscar-75596",
+					"configurations": {
+						"android": "1:464359073979:android:32fbe74d557e883ec4a19e",
+						"ios": "1:464359073979:ios:f9bd0059e216d9f4c4a19e",
+						"macos": "1:464359073979:ios:f9bd0059e216d9f4c4a19e"
+					}
+				}
+			}
+		}
+	}
+}
