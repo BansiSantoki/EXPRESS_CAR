@@ -538,7 +538,23 @@ class BookingDetailsPage extends StatelessWidget {
     final existingRating = _toInt(booking['user_rating']) ?? 0;
     final user = FirebaseAuth.instance.currentUser;
 
-    await FirebaseFirestore.instance.collection('bookings').doc(bookingId).set({
+    final bookingRef = FirebaseFirestore.instance
+        .collection('bookings')
+        .doc(bookingId);
+    final bookingSnapshot = await bookingRef.get();
+    final livePaymentStatus =
+        bookingSnapshot
+            .data()?['payment_status']
+            ?.toString()
+            .trim()
+            .toLowerCase() ??
+        'pending';
+
+    if (livePaymentStatus != 'paid') {
+      throw Exception('Payment is not completed for this booking.');
+    }
+
+    await bookingRef.set({
       'user_rating': rating,
       'user_review': review,
       'reviewed_at': FieldValue.serverTimestamp(),
