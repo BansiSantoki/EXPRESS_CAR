@@ -1,4 +1,9 @@
 import 'package:flutter/material.dart';
+import 'dart:convert';
+
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:http/http.dart' as http;
+import 'package:razorpay_flutter/razorpay_flutter.dart';
 
 class PaymentPage extends StatefulWidget {
   const PaymentPage({
@@ -17,6 +22,223 @@ class PaymentPage extends StatefulWidget {
 }
 
 class _PaymentPageState extends State<PaymentPage> {
+  static const String _defaultCurrency = 'INR';
+  static const String _definedRazorpayKeyId = String.fromEnvironment(
+    'RAZORPAY_KEY_ID',
+  );
+  static const String _createOrderUrl = String.fromEnvironment(
+    'PAYMENT_CREATE_ORDER_URL',
+  );
+  static const String _verifyPaymentUrl = String.fromEnvironment(
+    'PAYMENT_VERIFY_URL',
+  );
+  static const String _paymentFailureUrl = String.fromEnvironment(
+    'PAYMENT_FAILURE_URL',
+  );
+
+  late final Razorpay _razorpay;
+  bool _isProcessing = false;
+  String? _createdOrderId;
+
+  @override
+  void initState() {
+    super.initState();
+    _razorpay = Razorpay();
+    _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _onPaymentSuccess);
+    _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _onPaymentError);
+    _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _onExternalWallet);
+  }
+
+  @override
+  void dispose() {
+    _razorpay.clear();
+    super.dispose();
+  }
+
+  Future<String> _requireIdToken() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      throw Exception('Sign in required before payment.');
+    }
+    final token = await user.getIdToken();
+    if (token == null || token.isEmpty) {
+      throw Exception('Unable to get auth token for payment.');
+    }
+    return token;
+  }
+
+  int _toPaisa(num amount) {
+    if (amount <= 0) return 0;
+    return (amount * 100).round();
+  }
+
+  Future<Map<String, dynamic>> _postJson({
+    required String url,
+    required Map<String, dynamic> body,
+  }) async {
+    final token = await _requireIdToken();
+    final response = await http.post(
+      Uri.parse(url),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      },
+      body: jsonEncode(body),
+    );
+
+    final payload = response.body.trim().isEmpty
+        ? <String, dynamic>{}
+        : (jsonDecode(response.body) as Map<String, dynamic>);
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      final message =
+          payload['error']?.toString() ??
+          'Request failed with status ${response.statusCode}';
+      throw Exception(message);
+    }
+
+    return payload;
+  }
+
+  void _showMessage(String message, {bool isError = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: isError ? Colors.red : null,
+      ),
+    );
+  }
+
+  Future<void> _startOnlinePayment() async {
+    if (_isProcessing) return;
+
+    if (_createOrderUrl.isEmpty ||
+        _verifyPaymentUrl.isEmpty ||
+        _paymentFailureUrl.isEmpty) {
+      _showMessage(
+        'Missing payment URLs. Run with PAYMENT_* dart-defines.',
+        isError: true,
+      );
+      return;
+    }
+
+    final amountInPaisa = _toPaisa(widget.amount);
+    if (amountInPaisa <= 0) {
+      _showMessage('Invalid payment amount.', isError: true);
+      return;
+    }
+
+    setState(() => _isProcessing = true);
+
+    try {
+      final orderPayload = await _postJson(
+        url: _createOrderUrl,
+        body: {
+          'booking_id': widget.bookingId,
+          'amount': amountInPaisa,
+          'currency': _defaultCurrency,
+        },
+      );
+
+      final orderId = orderPayload['order_id']?.toString().trim() ?? '';
+      final keyFromServer = orderPayload['key_id']?.toString().trim() ?? '';
+      final effectiveKeyId = keyFromServer.isNotEmpty
+          ? keyFromServer
+          : _definedRazorpayKeyId;
+
+      if (orderId.isEmpty || effectiveKeyId.isEmpty) {
+        throw Exception('Payment configuration incomplete.');
+      }
+
+      _createdOrderId = orderId;
+
+      final user = FirebaseAuth.instance.currentUser;
+      final options = {
+        'key': effectiveKeyId,
+        'amount': amountInPaisa,
+        'name': 'Express Car',
+        'description': 'Booking ${widget.bookingId}',
+        'order_id': orderId,
+        'currency': _defaultCurrency,
+        'prefill': {
+          'email': user?.email ?? '',
+          'contact': user?.phoneNumber ?? '',
+        },
+        'notes': {'booking_id': widget.bookingId},
+      };
+
+      _razorpay.open(options);
+    } catch (error) {
+      _showMessage('Unable to start payment: $error', isError: true);
+      if (mounted) {
+        setState(() => _isProcessing = false);
+      }
+    }
+  }
+
+  Future<void> _onPaymentSuccess(PaymentSuccessResponse response) async {
+    try {
+      final orderId = response.orderId?.trim().isNotEmpty == true
+          ? response.orderId!.trim()
+          : (_createdOrderId ?? '');
+
+      if (orderId.isEmpty) {
+        throw Exception('Missing order id for verification.');
+      }
+
+      await _postJson(
+        url: _verifyPaymentUrl,
+        body: {
+          'booking_id': widget.bookingId,
+          'razorpay_payment_id': response.paymentId ?? '',
+          'razorpay_order_id': orderId,
+          'razorpay_signature': response.signature ?? '',
+        },
+      );
+
+      _showMessage('Payment verified successfully.');
+      if (mounted) {
+        Navigator.pop(context, true);
+      }
+    } catch (error) {
+      _showMessage('Payment verification failed: $error', isError: true);
+    } finally {
+      if (mounted) {
+        setState(() => _isProcessing = false);
+      }
+    }
+  }
+
+  Future<void> _onPaymentError(PaymentFailureResponse response) async {
+    try {
+      await _postJson(
+        url: _paymentFailureUrl,
+        body: {
+          'booking_id': widget.bookingId,
+          'payment_id': '',
+          'reason': response.message ?? 'Payment failed',
+        },
+      );
+    } catch (_) {
+      // UI already communicates failure; backend update best-effort.
+    } finally {
+      _showMessage('Payment failed. Please try again.', isError: true);
+      if (mounted) {
+        setState(() => _isProcessing = false);
+      }
+    }
+  }
+
+  void _onExternalWallet(ExternalWalletResponse response) {
+    _showMessage(
+      'External wallet selected: ${response.walletName ?? 'unknown'}',
+    );
+    if (mounted) {
+      setState(() => _isProcessing = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final amountLabel = widget.amount.toStringAsFixed(0);
@@ -60,13 +282,28 @@ class _PaymentPageState extends State<PaymentPage> {
             ),
             const SizedBox(height: 16),
             ElevatedButton.icon(
-              onPressed: () => Navigator.pop(context),
+              onPressed: _isProcessing ? null : _startOnlinePayment,
+              icon: _isProcessing
+                  ? const SizedBox(
+                      height: 18,
+                      width: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.payment),
+              label: Text(_isProcessing ? 'Processing...' : 'Pay Online'),
+            ),
+            const SizedBox(height: 10),
+            ElevatedButton.icon(
+              onPressed: _isProcessing ? null : () => Navigator.pop(context),
               icon: const Icon(Icons.check_circle_outline),
-              label: const Text('Cash on Pickup Confirmed'),
+              label: const Text('Use Cash on Pickup'),
             ),
             const SizedBox(height: 8),
             const Text(
-              'Note: Please pay at pickup. Admin will mark your booking as paid after receiving payment.',
+              'Online payment marks your booking as paid after backend verification. Cash on pickup keeps payment pending until manually confirmed.',
               style: TextStyle(color: Color(0xFF6B7280), fontSize: 12),
             ),
           ],
