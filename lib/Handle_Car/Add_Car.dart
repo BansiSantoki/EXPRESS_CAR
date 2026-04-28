@@ -310,7 +310,6 @@ class _AddCarPageState extends State<AddCarPage> {
           'created_at': FieldValue.serverTimestamp(),
         };
 
-        // 4. Save to Firestore
         await FirebaseFirestore.instance
             .collection('cars')
             .doc(carId.toString())
