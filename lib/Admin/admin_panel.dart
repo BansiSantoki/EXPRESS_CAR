@@ -41,15 +41,6 @@ class AdminPanelPage extends StatelessWidget {
     return FirebaseFirestore.instance.collection('users').snapshots();
   }
 
-  Stream<int> _countUsersWithLoginHistory() {
-    return _allUsersStream().map(
-      (snapshot) => snapshot.docs.where((doc) {
-        final data = doc.data();
-        return data['lastLoginAt'] != null || data['lastSeenAt'] != null;
-      }).length,
-    );
-  }
-
   String _formatTimestamp(dynamic value) {
     if (value is Timestamp) {
       final dt = value.toDate().toLocal();
@@ -69,6 +60,159 @@ class AdminPanelPage extends StatelessWidget {
     final email = (data['email'] ?? '').toString().toLowerCase();
     final uid = doc.id.toLowerCase();
     return email.contains(normalized) || uid.contains(normalized);
+  }
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> _collectionStream(
+    String collection,
+  ) {
+    return FirebaseFirestore.instance.collection(collection).snapshots();
+  }
+
+  DateTime? _readTimestamp(Map<String, dynamic> data, List<String> keys) {
+    for (final key in keys) {
+      final value = data[key];
+      if (value is Timestamp) return value.toDate();
+      if (value is DateTime) return value;
+      if (value != null) {
+        final parsed = DateTime.tryParse(value.toString());
+        if (parsed != null) return parsed;
+      }
+    }
+    return null;
+  }
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _sortByLatestTimestamp(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    List<String> keys,
+  ) {
+    final sorted = [...docs];
+    sorted.sort((a, b) {
+      final aTime =
+          _readTimestamp(a.data(), keys) ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      final bTime =
+          _readTimestamp(b.data(), keys) ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      return bTime.compareTo(aTime);
+    });
+    return sorted;
+  }
+
+  String _displayText(dynamic value, {String fallback = '-'}) {
+    final text = value?.toString().trim() ?? '';
+    return text.isEmpty ? fallback : text;
+  }
+
+  Widget _buildLiveSectionHeader(String title, String subtitle, IconData icon) {
+    return Row(
+      children: [
+        CircleAvatar(
+          backgroundColor: AppTheme.primarySoft,
+          child: Icon(icon, color: AppTheme.primary),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: AppTheme.ink,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(subtitle, style: const TextStyle(color: Color(0xFF6B7280))),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLiveFeedCard({
+    required String collection,
+    required String title,
+    required String subtitle,
+    required IconData icon,
+    required List<String> timestampKeys,
+    required String emptyMessage,
+    required Widget Function(
+      BuildContext context,
+      Map<String, dynamic> data,
+      String docId,
+    )
+    itemBuilder,
+  }) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppTheme.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildLiveSectionHeader(title, subtitle, icon),
+          const SizedBox(height: 12),
+          StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            stream: _collectionStream(collection),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 20),
+                  child: Center(child: CircularProgressIndicator()),
+                );
+              }
+
+              if (snapshot.hasError) {
+                return const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Text(
+                    'Unable to load live data.',
+                    style: TextStyle(color: AppTheme.accent),
+                  ),
+                );
+              }
+
+              final docs = _sortByLatestTimestamp(
+                snapshot.data?.docs ?? [],
+                timestampKeys,
+              );
+
+              if (docs.isEmpty) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text(
+                    emptyMessage,
+                    style: const TextStyle(color: Color(0xFF6B7280)),
+                  ),
+                );
+              }
+
+              final previewDocs = docs.take(5).toList();
+
+              return Column(
+                children: previewDocs
+                    .map((doc) => itemBuilder(context, doc.data(), doc.id))
+                    .map(
+                      (child) => Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: child,
+                      ),
+                    )
+                    .toList(),
+              );
+            },
+          ),
+        ],
+      ),
+    );
   }
 
   void _showUsersSheet(BuildContext context, _AdminUserSheetMode mode) {
@@ -452,6 +596,285 @@ class AdminPanelPage extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 20),
+              _buildLiveFeedCard(
+                collection: 'users',
+                title: 'Live Users',
+                subtitle:
+                    'Newest profiles, roles, and presence status from Firebase.',
+                icon: Icons.people_alt_outlined,
+                timestampKeys: const [
+                  'lastLoginAt',
+                  'lastSeenAt',
+                  'createdAt',
+                  'updatedAt',
+                  'presenceUpdatedAt',
+                ],
+                emptyMessage: 'No user documents yet.',
+                itemBuilder: (context, data, docId) {
+                  final email = _displayText(
+                    data['email'],
+                    fallback: 'No email',
+                  );
+                  final role = _displayText(data['role'], fallback: 'user');
+                  final isOnline = data['isOnline'] == true;
+                  final displayName = _displayText(
+                    data['displayName'],
+                    fallback: email,
+                  );
+
+                  return Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF9FAFB),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: AppTheme.border),
+                    ),
+                    child: Row(
+                      children: [
+                        CircleAvatar(
+                          backgroundColor: isOnline
+                              ? const Color(0xFFDDF6E8)
+                              : const Color(0xFFEFF3F9),
+                          child: Icon(
+                            isOnline ? Icons.circle : Icons.person_outline,
+                            size: isOnline ? 12 : 18,
+                            color: isOnline
+                                ? const Color(0xFF22A064)
+                                : const Color(0xFF3B82F6),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                displayName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  color: AppTheme.ink,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                '$email • $role',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Color(0xFF6B7280),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          isOnline ? 'Online' : 'Offline',
+                          style: TextStyle(
+                            color: isOnline
+                                ? const Color(0xFF22A064)
+                                : const Color(0xFF6B7280),
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+              _buildLiveFeedCard(
+                collection: 'cars',
+                title: 'Live Cars',
+                subtitle: 'Fresh car listings saved from the admin add form.',
+                icon: Icons.directions_car_outlined,
+                timestampKeys: const ['created_at', 'updated_at', 'updatedAt'],
+                emptyMessage: 'No cars have been added yet.',
+                itemBuilder: (context, data, docId) {
+                  final name = _displayText(
+                    data['name'],
+                    fallback: 'Untitled car',
+                  );
+                  final model = _displayText(data['model']);
+                  final type = _displayText(data['type']);
+                  final price = data['price_per_day'] ?? data['price'];
+                  final ownerEmail = _displayText(data['owner_email']);
+
+                  return Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF9FAFB),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: AppTheme.border),
+                    ),
+                    child: Row(
+                      children: [
+                        CircleAvatar(
+                          backgroundColor: AppTheme.primarySoft,
+                          child: const Icon(
+                            Icons.directions_car,
+                            color: AppTheme.primary,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  color: AppTheme.ink,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                [
+                                  if (model != '-') model,
+                                  if (type != '-') type,
+                                ].join(' • '),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Color(0xFF6B7280),
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Owner: $ownerEmail',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Color(0xFF6B7280),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Rs ${_displayText(price)}',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            color: AppTheme.ink,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+              _buildLiveFeedCard(
+                collection: 'bookings',
+                title: 'Live Bookings',
+                subtitle:
+                    'Recent bookings and payment status straight from Firebase.',
+                icon: Icons.assignment_turned_in_outlined,
+                timestampKeys: const [
+                  'created_at',
+                  'createdAt',
+                  'updated_at',
+                  'updatedAt',
+                  'paid_at',
+                  'payment_time',
+                ],
+                emptyMessage: 'No bookings have been created yet.',
+                itemBuilder: (context, data, docId) {
+                  final bookingId = _displayText(
+                    data['booking_id'],
+                    fallback: docId,
+                  );
+                  final carName = _displayText(
+                    data['car_name'],
+                    fallback: 'Unknown car',
+                  );
+                  final userEmail = _displayText(
+                    data['user_mail'] ?? data['user_email'],
+                    fallback: 'Unknown user',
+                  );
+                  final paymentStatus = _displayText(
+                    data['payment_status'],
+                    fallback: 'pending',
+                  );
+                  final totalAmount = _displayText(
+                    data['total_amount'],
+                    fallback: '0',
+                  );
+
+                  return Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF9FAFB),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: AppTheme.border),
+                    ),
+                    child: Row(
+                      children: [
+                        CircleAvatar(
+                          backgroundColor: const Color(0xFFEFF3F9),
+                          child: const Icon(
+                            Icons.receipt_long,
+                            color: Color(0xFF3B82F6),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '$bookingId • $carName',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  color: AppTheme.ink,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                userEmail,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Color(0xFF6B7280),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              'Rs $totalAmount',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                                color: AppTheme.ink,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              paymentStatus.toUpperCase(),
+                              style: TextStyle(
+                                color: paymentStatus.toLowerCase() == 'paid'
+                                    ? const Color(0xFF22A064)
+                                    : const Color(0xFFD97706),
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
               const Text(
                 'Active User IDs',
                 style: TextStyle(
@@ -540,51 +963,59 @@ class AdminPanelPage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 12),
-              _ActionTile(
-                icon: Icons.add_circle_outline,
-                title: 'Add Car',
-                subtitle: 'Create a new car listing with ImgBB images.',
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const AddCarPage()),
-                  );
-                },
-              ),
-              _ActionTile(
-                icon: Icons.manage_accounts,
-                title: 'Manage Users',
-                subtitle: 'Promote users to admin or update roles.',
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const ManageUsersPage()),
-                  );
-                },
-              ),
-              _ActionTile(
-                icon: Icons.car_rental,
-                title: 'Manage Cars',
-                subtitle: 'Review and control listed cars.',
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const ManageCarsPage()),
-                  );
-                },
-              ),
-              _ActionTile(
-                icon: Icons.calendar_month,
-                title: 'Manage Bookings',
-                subtitle: 'Track all booking records.',
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => const ManageBookingsPage(),
+              // Compact admin actions in one row
+              Row(
+                children: [
+                  Expanded(
+                    child: _ActionIcon(
+                      icon: Icons.add_circle_outline,
+                      label: 'Add Car',
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const AddCarPage()),
+                      ),
                     ),
-                  );
-                },
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _ActionIcon(
+                      icon: Icons.manage_accounts,
+                      label: 'Users',
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const ManageUsersPage(),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _ActionIcon(
+                      icon: Icons.car_rental,
+                      label: 'Cars',
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const ManageCarsPage(),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _ActionIcon(
+                      icon: Icons.calendar_month,
+                      label: 'Bookings',
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const ManageBookingsPage(),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 18),
               SizedBox(
@@ -723,6 +1154,52 @@ class _ActionTile extends StatelessWidget {
         subtitle: Text(subtitle),
         trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 16),
         onTap: onTap,
+      ),
+    );
+  }
+}
+
+class _ActionIcon extends StatelessWidget {
+  const _ActionIcon({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppTheme.border),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircleAvatar(
+              radius: 20,
+              backgroundColor: AppTheme.primarySoft,
+              child: Icon(icon, color: AppTheme.primary, size: 20),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
       ),
     );
   }
