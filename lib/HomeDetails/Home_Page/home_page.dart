@@ -49,6 +49,8 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int selectedIndex = 0;
+  Car? _compareLeft;
+  Car? _compareRight;
   String selectedCategory = "All";
   String searchQuery = "";
   Set<String> favoriteCars = {};
@@ -117,6 +119,78 @@ class _HomePageState extends State<HomePage> {
       _scrollCarsToTop();
     });
     _startLocationTracking();
+  }
+
+  void _showComparePicker(bool isLeft) async {
+    final selected = await showModalBottomSheet<Car?>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) {
+        final list = _baseCars;
+        return SafeArea(
+          child: ListView.separated(
+            padding: EdgeInsets.all(12),
+            itemBuilder: (c, i) {
+              final car = list[i];
+              return ListTile(
+                leading: SizedBox(
+                  width: 72,
+                  height: 48,
+                  child: car.imageUrl != null
+                      ? Image.network(car.imageUrl!, fit: BoxFit.cover)
+                      : Image.asset(car.fallbackAssetPath, fit: BoxFit.cover),
+                ),
+                title: Text(car.name),
+                subtitle: Text('Rs ${car.pricePerDay.toStringAsFixed(0)}/day'),
+                onTap: () => Navigator.of(ctx).pop(car),
+              );
+            },
+            separatorBuilder: (_, __) => Divider(),
+            itemCount: list.length,
+          ),
+        );
+      },
+    );
+
+    if (selected == null) return;
+    setState(() {
+      if (isLeft)
+        _compareLeft = selected;
+      else
+        _compareRight = selected;
+    });
+  }
+
+  void _compareNow() {
+    if (_compareLeft == null || _compareRight == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Please select two cars to compare')),
+      );
+      return;
+    }
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Compare'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('${_compareLeft!.name}  VS  ${_compareRight!.name}'),
+            SizedBox(height: 12),
+            Text(_compareLeft!.description),
+            SizedBox(height: 8),
+            Text(_compareRight!.description),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text('Close'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _startLiveCarsListener() {
@@ -1211,6 +1285,266 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Widget _buildComparePage() {
+    return SafeArea(
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+            child: Row(
+              children: [
+                IconButton(
+                  onPressed: () => setState(() => selectedIndex = 0),
+                  icon: const Icon(Icons.menu_rounded),
+                ),
+                const SizedBox(width: 4),
+                const Expanded(
+                  child: Text(
+                    'Compare Cars',
+                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 18),
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: () => _showComparePicker(true),
+                        child: Container(
+                          height: 142,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.grey.shade300),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              SizedBox(
+                                height: 46,
+                                width: 46,
+                                child: CarApiImage(
+                                  imageUrl: _compareLeft?.imageUrl,
+                                  fallbackAssetPath:
+                                      _compareLeft?.fallbackAssetPath ??
+                                      'assets/images/Kia Seltos.jpg',
+                                  fit: BoxFit.contain,
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              Text(
+                                _compareLeft?.name ?? 'Select Car',
+                                style: const TextStyle(
+                                  color: Color(0xFF1E88E5),
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: () => _showComparePicker(false),
+                        child: Container(
+                          height: 142,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.grey.shade300),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              SizedBox(
+                                height: 46,
+                                width: 46,
+                                child: CarApiImage(
+                                  imageUrl: _compareRight?.imageUrl,
+                                  fallbackAssetPath:
+                                      _compareRight?.fallbackAssetPath ??
+                                      'assets/images/Kia Seltos.jpg',
+                                  fit: BoxFit.contain,
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              Text(
+                                _compareRight?.name ?? 'Select Car',
+                                style: const TextStyle(
+                                  color: Color(0xFF1E88E5),
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Add Car pressed')),
+                        );
+                      },
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add Car'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(0, 48),
+                        padding: const EdgeInsets.symmetric(horizontal: 18),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: _compareNow,
+                        style: ElevatedButton.styleFrom(
+                          minimumSize: const Size(0, 48),
+                          backgroundColor: const Color(0xFFE53916),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: const Text(
+                          'Compare',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                const Center(
+                  child: Text(
+                    'POPULAR CAR COMPARISONS',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                ..._buildPopularComparisons(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _buildPopularComparisons() {
+    final rows = <Widget>[];
+    final list = _baseCars;
+    for (var i = 0; i + 1 < list.length && rows.length < 4; i += 2) {
+      final left = list[i];
+      final right = list[i + 1];
+      rows.add(
+        Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.grey.shade300),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      height: 78,
+                      child: CarApiImage(
+                        imageUrl: left.imageUrl,
+                        fallbackAssetPath: left.fallbackAssetPath,
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      left.name,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    Text(
+                      'Rs. ${left.pricePerDay.toStringAsFixed(0)} Lakh onwards',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 8),
+                child: CircleAvatar(
+                  radius: 14,
+                  backgroundColor: Color(0xFFF8E8E3),
+                  child: Text(
+                    'VS',
+                    style: TextStyle(fontSize: 11, color: Color(0xFFE87A5A)),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      height: 78,
+                      child: CarApiImage(
+                        imageUrl: right.imageUrl,
+                        fallbackAssetPath: right.fallbackAssetPath,
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      right.name,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    Text(
+                      'Rs. ${right.pricePerDay.toStringAsFixed(0)} Lakh onwards',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    return rows;
+  }
+
   Widget buildFavoritesPage() {
     final favoriteList = _baseCars.where(_isFavorite).toList();
     return FavoritePage(
@@ -1230,6 +1564,7 @@ class _HomePageState extends State<HomePage> {
       body: SafeArea(
         child: [
           buildHomePage(),
+          _buildComparePage(),
           buildBookedPage(),
           buildFavoritesPage(),
           buildMenuPage(),
@@ -1273,6 +1608,10 @@ class _HomePageState extends State<HomePage> {
           type: BottomNavigationBarType.fixed,
           items: const [
             BottomNavigationBarItem(icon: Icon(Icons.home), label: "Home"),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.compare_arrows),
+              label: "Compare",
+            ),
             BottomNavigationBarItem(
               icon: Icon(Icons.directions_car),
               label: "Booking",

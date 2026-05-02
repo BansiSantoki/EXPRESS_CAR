@@ -16,8 +16,9 @@ class AdminLoginPage extends StatefulWidget {
 class _AdminLoginPageState extends State<AdminLoginPage> {
   static const String _fixedAdminEmail = 'admin@expresscar.com';
   static const String _fixedAdminPassword = 'Admin@12345';
-  static const Color _mint = Color(0xFF3FE48D);
-  static const Color _mintDark = Color(0xFF20C26D);
+  static const Color _mintDark = Color(0xFF1D4ED8);
+  // switched accent to blue
+  static const Color _mint = Color(0xFF3B82F6);
   static const Color _ink = Color(0xFF0E0F14);
   static const Color _surface = Color(0xFFF3F4F6);
 

@@ -8,6 +8,7 @@
   },
   "scripts": {
     "serve": "firebase emulators:start --only functions",
+    "seed:firestore": "node create_collections.js",
     "deploy": "firebase deploy --only functions"
   },
   "dependencies": {
