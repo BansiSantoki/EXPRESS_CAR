@@ -69,3 +69,4 @@ class _SplashScreenWrapperState extends State<SplashScreenWrapper> {
     return SplashScreen();
   }
 }
+
