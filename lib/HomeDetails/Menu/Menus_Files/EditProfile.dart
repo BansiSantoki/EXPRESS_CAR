@@ -1,15 +1,14 @@
 // ignore_for_file: file_names
 
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_storage/firebase_storage.dart';
+import 'package:cloudinary_public/cloudinary_public.dart';
 import 'package:express_car/theme/app_theme.dart';
-import 'package:express_car/services/imgbb_upload_service.dart';
 
 class EditProfilePage extends StatefulWidget {
   const EditProfilePage({super.key});
@@ -22,15 +21,19 @@ class _EditProfilePageState extends State<EditProfilePage> {
   final _formKey = GlobalKey<FormState>();
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
+  // Initialize Cloudinary (Using the same credentials from your Admin panel)
+  final cloudinary = CloudinaryPublic('dstlqyncg', 'carimages18', cache: false);
+
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _addressController = TextEditingController();
   final TextEditingController _dobController = TextEditingController();
+
   String? _selectedGender;
-  String? _profileImage;
-  Uint8List? _profileImageBytes;
-  String? _profileImageFileName;
+  String? _profileImage; // URL from Firestore
+  Uint8List? _profileImageBytes; // For UI Preview
+  File? _selectedImageFile; // For Cloudinary Upload
 
   bool _isSubmitting = false;
   final Color _primaryColor = AppTheme.primary;
@@ -79,61 +82,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
     if (!mounted) return;
     setState(() {
+      _selectedImageFile = File(picked.path);
       _profileImageBytes = bytes;
-      _profileImageFileName = picked.name;
     });
-  }
-
-  Future<String> _uploadProfileImageToStorage() async {
-    final user = _auth.currentUser;
-    if (user == null || _profileImageBytes == null) {
-      throw Exception('No profile image selected');
-    }
-
-    final rawFileName =
-        _profileImageFileName ??
-        'profile_${user.uid}_${DateTime.now().millisecondsSinceEpoch}.jpg';
-    final fileName = _sanitizeFileName(rawFileName);
-    final ext = fileName.split('.').last.toLowerCase();
-    final safeExt = ext.isEmpty ? 'jpg' : ext;
-    final storagePath = 'profile_images/${user.uid}/$fileName';
-    final metadata = SettableMetadata(contentType: 'image/$safeExt');
-
-    try {
-      final ref = FirebaseStorage.instance.ref(storagePath);
-      return _putImageAndGetUrl(ref, metadata);
-    } on FirebaseException catch (error) {
-      if (!_shouldRetryWithLegacyBucket(error)) {
-        rethrow;
-      }
-
-      final projectId = Firebase.app().options.projectId;
-      final legacyBucket = 'gs://$projectId.appspot.com';
-      final legacyRef = FirebaseStorage.instanceFor(
-        bucket: legacyBucket,
-      ).ref(storagePath);
-      return _putImageAndGetUrl(legacyRef, metadata);
-    }
-  }
-
-  Future<String> _putImageAndGetUrl(
-    Reference ref,
-    SettableMetadata metadata,
-  ) async {
-    final snapshot = await ref.putData(_profileImageBytes!, metadata);
-    return snapshot.ref.getDownloadURL();
-  }
-
-  bool _shouldRetryWithLegacyBucket(FirebaseException error) {
-    return error.code == 'object-not-found' || error.code == 'bucket-not-found';
-  }
-
-  String _sanitizeFileName(String fileName) {
-    final clean = fileName.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
-    if (clean.isEmpty) {
-      return 'profile_${DateTime.now().millisecondsSinceEpoch}.jpg';
-    }
-    return clean;
   }
 
   String? _normalizeGender(String? raw) {
@@ -159,31 +110,27 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
       String? photoUrl = _profileImage;
       String? uploadError;
-      if (_profileImageBytes != null) {
+
+      // 🚀 OPTIMIZATION: Upload to Cloudinary instead of Firebase Storage
+      if (_selectedImageFile != null) {
         try {
-          photoUrl = await _uploadProfileImageToStorage();
-        } catch (storageError) {
-          try {
-            final fileName =
-                _profileImageFileName ??
-                'profile_${user.uid}_${DateTime.now().millisecondsSinceEpoch}.jpg';
-            photoUrl = await uploadBytesToImgbb(
-              _profileImageBytes!.toList(),
-              fileName: fileName,
-            );
-          } on ImgbbUploadException catch (imgbbError) {
-            uploadError =
-                'Firebase Storage upload failed: $storageError | ImgBB fallback failed: $imgbbError';
-          } catch (imgbbError) {
-            uploadError =
-                'Firebase Storage upload failed: $storageError | ImgBB fallback failed: $imgbbError';
-          }
+          final response = await cloudinary.uploadFile(
+            CloudinaryFile.fromFile(
+              _selectedImageFile!.path,
+              resourceType: CloudinaryResourceType.Image,
+              folder: 'profile_images',
+            ),
+          );
+          photoUrl = response.secureUrl;
+        } catch (e) {
+          uploadError = e.toString();
         }
       }
 
       final docRef = FirebaseFirestore.instance
           .collection('users')
           .doc(user.uid);
+
       await docRef.set({
         'displayName': _nameController.text.trim(),
         'phone': _phoneController.text.trim(),
@@ -203,6 +150,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
       final message = uploadError == null
           ? 'Profile updated successfully!'
           : 'Profile updated, but photo upload failed: $uploadError';
+
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(message)));

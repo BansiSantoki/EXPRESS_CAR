@@ -9,11 +9,20 @@ import 'package:express_car/services/user_presence_service.dart';
 import '../Handle_Car/Manage_Cars.dart';
 import '../Splash/get_start.dart';
 import 'manage_users.dart';
+import 'driver_management_page.dart';
+import 'app_settings_page.dart'; // 🚀 IMPORT ADDED
 
 enum _AdminUserSheetMode { total, loggedIn }
 
-class AdminPanelPage extends StatelessWidget {
+class AdminPanelPage extends StatefulWidget {
   const AdminPanelPage({super.key});
+
+  @override
+  State<AdminPanelPage> createState() => _AdminPanelPageState();
+}
+
+class _AdminPanelPageState extends State<AdminPanelPage> {
+  int _selectedIndex = 0;
 
   Stream<int> _countCollection(String collection) {
     return FirebaseFirestore.instance
@@ -101,6 +110,46 @@ class AdminPanelPage extends StatelessWidget {
   String _displayText(dynamic value, {String fallback = '-'}) {
     final text = value?.toString().trim() ?? '';
     return text.isEmpty ? fallback : text;
+  }
+
+  Future<void> _handleLogout() async {
+    await UserPresenceService.markCurrentUserOffline();
+    await FirebaseAuth.instance.signOut();
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const GetStart()),
+      (route) => false,
+    );
+  }
+
+  void _onNavTapped(int index) async {
+    if (_selectedIndex == index) return;
+
+    setState(() => _selectedIndex = index);
+
+    // Add a smooth delay to let the selection animation play before pushing the route
+    await Future.delayed(const Duration(milliseconds: 250));
+
+    Widget page;
+    if (index == 1) {
+      page = const ManageUsersPage();
+    } else if (index == 2) {
+      page = const ManageCarsPage();
+    } else if (index == 3) {
+      page = const ManageBookingsPage();
+    } else if (index == 4) {
+      page = const DriverManagementPage();
+    } else {
+      return; // Home
+    }
+
+    if (!mounted) return;
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+
+    // When returning from the pushed page, smoothly animate back to the Home tab
+    if (mounted) {
+      setState(() => _selectedIndex = 0);
+    }
   }
 
   Widget _buildLiveSectionHeader(String title, String subtitle, IconData icon) {
@@ -488,14 +537,125 @@ class AdminPanelPage extends StatelessWidget {
     );
   }
 
+  Widget _buildNavItem(int index, IconData icon, String label) {
+    final isSelected = _selectedIndex == index;
+    return GestureDetector(
+      onTap: () => _onNavTapped(index),
+      behavior: HitTestBehavior.opaque,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOutQuint,
+        padding: EdgeInsets.symmetric(
+          horizontal: isSelected ? 12 : 8,
+          vertical: 8,
+        ),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? AppTheme.primary.withValues(alpha: 0.2)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              color: isSelected ? AppTheme.primary : Colors.white70,
+              size: 22,
+            ),
+            if (isSelected) ...[
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: const TextStyle(
+                  color: AppTheme.primary,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppTheme.canvas,
-      appBar: AppBar(title: const Text('Admin Control Center')),
+      appBar: AppBar(
+        title: const Text('Admin Control Center'),
+        actions: [
+          // 🚀 NEW: Settings Button
+          IconButton(
+            icon: const Icon(Icons.settings, color: AppTheme.ink),
+            tooltip: 'Settings',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const AppSettingsPage()),
+              );
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.logout_rounded, color: Colors.redAccent),
+            tooltip: 'Logout',
+            onPressed: _handleLogout,
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
+      // Floating Action Button for primary action
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const AddCarPage()),
+        ),
+        backgroundColor: AppTheme.primary,
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.add_circle_outline),
+        label: const Text(
+          'Add Car',
+          style: TextStyle(fontWeight: FontWeight.w700),
+        ),
+      ),
+      // Futuristic Floating Bottom Navigation Bar
+      bottomNavigationBar: SafeArea(
+        child: Container(
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          height: 65,
+          decoration: BoxDecoration(
+            color: const Color(0xFF121319),
+            borderRadius: BorderRadius.circular(24),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.25),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              _buildNavItem(0, Icons.dashboard_rounded, 'Home'),
+              _buildNavItem(1, Icons.people_alt_rounded, 'Users'),
+              _buildNavItem(2, Icons.directions_car_rounded, 'Cars'),
+              _buildNavItem(3, Icons.calendar_month_rounded, 'Bookings'),
+              _buildNavItem(4, Icons.badge_rounded, 'Fleet'),
+            ],
+          ),
+        ),
+      ),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.fromLTRB(
+            16,
+            16,
+            16,
+            80,
+          ), // Extra padding for FAB/Nav
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -563,6 +723,12 @@ class AdminPanelPage extends StatelessWidget {
                       title: 'Cars',
                       icon: Icons.directions_car_outlined,
                       countStream: _countCollection('cars'),
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const ManageCarsPage(),
+                        ),
+                      ),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -571,6 +737,12 @@ class AdminPanelPage extends StatelessWidget {
                       title: 'Bookings',
                       icon: Icons.assignment_turned_in_outlined,
                       countStream: _countCollection('bookings'),
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const ManageBookingsPage(),
+                        ),
+                      ),
                     ),
                   ),
                 ],
@@ -583,6 +755,12 @@ class AdminPanelPage extends StatelessWidget {
                       title: 'Fleet Docs',
                       icon: Icons.badge_outlined,
                       countStream: _countCollection('driver_documents'),
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const DriverManagementPage(),
+                        ),
+                      ),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -591,6 +769,12 @@ class AdminPanelPage extends StatelessWidget {
                       title: 'Fleet Items',
                       icon: Icons.directions_car_filled_outlined,
                       countStream: _countCollection('fleet_items'),
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const DriverManagementPage(),
+                        ),
+                      ),
                     ),
                   ),
                 ],
@@ -953,92 +1137,6 @@ class AdminPanelPage extends StatelessWidget {
                   },
                 ),
               ),
-              const SizedBox(height: 20),
-              const Text(
-                'Admin Actions',
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w800,
-                  color: AppTheme.ink,
-                ),
-              ),
-              const SizedBox(height: 12),
-              // Compact admin actions in one row
-              Row(
-                children: [
-                  Expanded(
-                    child: _ActionIcon(
-                      icon: Icons.add_circle_outline,
-                      label: 'Add Car',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (_) => const AddCarPage()),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _ActionIcon(
-                      icon: Icons.manage_accounts,
-                      label: 'Users',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const ManageUsersPage(),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _ActionIcon(
-                      icon: Icons.car_rental,
-                      label: 'Cars',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const ManageCarsPage(),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _ActionIcon(
-                      icon: Icons.calendar_month,
-                      label: 'Bookings',
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const ManageBookingsPage(),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 18),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  icon: const Icon(Icons.logout),
-                  label: const Text('Logout'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.accent,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                  ),
-                  onPressed: () async {
-                    await UserPresenceService.markCurrentUserOffline();
-                    await FirebaseAuth.instance.signOut();
-                    if (!context.mounted) return;
-                    Navigator.of(context).pushAndRemoveUntil(
-                      MaterialPageRoute(builder: (_) => const GetStart()),
-                      (route) => false,
-                    );
-                  },
-                ),
-              ),
             ],
           ),
         ),
@@ -1109,94 +1207,6 @@ class _CountCard extends StatelessWidget {
                   );
                 },
               ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ActionTile extends StatelessWidget {
-  const _ActionTile({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppTheme.border),
-      ),
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: AppTheme.primarySoft,
-          child: Icon(icon, color: AppTheme.primary),
-        ),
-        title: Text(
-          title,
-          style: const TextStyle(
-            fontWeight: FontWeight.w800,
-            color: AppTheme.ink,
-          ),
-        ),
-        subtitle: Text(subtitle),
-        trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 16),
-        onTap: onTap,
-      ),
-    );
-  }
-}
-
-class _ActionIcon extends StatelessWidget {
-  const _ActionIcon({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppTheme.border),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircleAvatar(
-              radius: 20,
-              backgroundColor: AppTheme.primarySoft,
-              child: Icon(icon, color: AppTheme.primary, size: 20),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
-              textAlign: TextAlign.center,
             ),
           ],
         ),

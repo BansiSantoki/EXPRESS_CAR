@@ -7,7 +7,7 @@ import 'package:express_car/services/user_presence_service.dart';
 import 'signin_page.dart';
 
 class AdminLoginPage extends StatefulWidget {
-  const AdminLoginPage({Key? key}) : super(key: key);
+  const AdminLoginPage({super.key});
 
   @override
   State<AdminLoginPage> createState() => _AdminLoginPageState();
@@ -17,7 +17,6 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
   static const String _fixedAdminEmail = 'admin@expresscar.com';
   static const String _fixedAdminPassword = 'Admin@12345';
   static const Color _mintDark = Color(0xFF1D4ED8);
-  // switched accent to blue
   static const Color _mint = Color(0xFF3B82F6);
   static const Color _ink = Color(0xFF0E0F14);
   static const Color _surface = Color(0xFFF3F4F6);
@@ -43,7 +42,6 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
       final enteredEmail = _emailController.text.trim().toLowerCase();
       final enteredPassword = _passwordController.text.trim();
 
-      // Admin panel remains locked to one fixed credential pair.
       if (enteredEmail != _fixedAdminEmail ||
           enteredPassword != _fixedAdminPassword) {
         if (!mounted) return;
@@ -64,7 +62,9 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
           password: _fixedAdminPassword,
         );
       } on FirebaseAuthException catch (e) {
-        if (e.code != 'user-not-found') rethrow;
+        if (e.code != 'user-not-found' && e.code != 'invalid-credential') {
+          rethrow;
+        }
 
         // First-time setup: create fixed admin account.
         userCredential = await FirebaseAuth.instance
@@ -83,11 +83,11 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
       final docRef = FirebaseFirestore.instance
           .collection('users')
           .doc(user.uid);
+          
       await docRef.set({
         'displayName': user.displayName ?? 'Admin',
         'email': user.email ?? _fixedAdminEmail,
         'photoURL': user.photoURL ?? '',
-        'favorites': [],
         'createdAt': FieldValue.serverTimestamp(),
         'lastLoginAt': FieldValue.serverTimestamp(),
         'lastSeenAt': FieldValue.serverTimestamp(),
@@ -95,60 +95,22 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
         'presenceUpdatedAt': FieldValue.serverTimestamp(),
         'role': 'admin',
       }, SetOptions(merge: true));
+      
       await UserPresenceService.markCurrentUserOnline(user: user);
 
-      final doc = await docRef.get();
-      final userData = doc.data();
-      final role = (userData?['role'] ?? 'user') as String;
-
       if (!mounted) return;
-      if (role != 'admin') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Admin role not found in Firestore.')),
-        );
-        return;
-      }
-
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (_) => const AdminPanelPage()),
       );
     } on FirebaseAuthException catch (e) {
-      if (_emailController.text.trim().toLowerCase() == _fixedAdminEmail) {
-        try {
-          await FirebaseFirestore.instance
-              .collection('users')
-              .doc(_fixedAdminEmail)
-              .set({
-                'displayName': 'Admin',
-                'email': _fixedAdminEmail,
-                'photoURL': '',
-                'favorites': [],
-                'createdAt': FieldValue.serverTimestamp(),
-                'lastLoginAt': FieldValue.serverTimestamp(),
-                'lastSeenAt': FieldValue.serverTimestamp(),
-                'isOnline': true,
-                'presenceUpdatedAt': FieldValue.serverTimestamp(),
-                'role': 'admin',
-              }, SetOptions(merge: true));
-        } catch (_) {
-          // Best effort only; admin panel still opens so the flow doesn't fail.
-        }
-
-        if (!mounted) return;
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const AdminPanelPage()),
-        );
-        return;
-      }
-
       String message;
       switch (e.code) {
         case 'user-not-found':
           message = 'No account found with this email.';
           break;
         case 'wrong-password':
+        case 'invalid-credential':
           message = 'Incorrect password. Try again.';
           break;
         case 'invalid-email':
@@ -183,7 +145,7 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Stack(
-                children: [
+                children:[
                   Container(
                     height: size.height * 0.31,
                     decoration: BoxDecoration(
@@ -191,7 +153,7 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
                       gradient: const LinearGradient(
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
-                        colors: [Color(0xFF15171E), Color(0xFF090A0F)],
+                        colors:[Color(0xFF15171E), Color(0xFF090A0F)],
                       ),
                     ),
                   ),
@@ -235,7 +197,7 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
                     bottom: 18,
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
+                      children:[
                         const Text(
                           'Admin Access',
                           style: TextStyle(
@@ -264,7 +226,7 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(24),
-                  boxShadow: [
+                  boxShadow:[
                     BoxShadow(
                       color: Colors.black.withValues(alpha: 0.05),
                       blurRadius: 20,
@@ -275,7 +237,7 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
                 child: Form(
                   key: _formKey,
                   child: Column(
-                    children: [
+                    children:[
                       Container(
                         width: double.infinity,
                         padding: const EdgeInsets.all(12),
@@ -392,7 +354,7 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
                           ),
                         ),
                         child: Row(
-                          children: [
+                          children:[
                             const Icon(
                               Icons.verified_user,
                               size: 18,
