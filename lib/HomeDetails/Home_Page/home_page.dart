@@ -18,6 +18,9 @@ import 'package:express_car/services/car_image_widget.dart';
 import 'package:express_car/services/car_location_tracking_service.dart';
 import 'package:express_car/services/user_presence_service.dart';
 
+// 🚀 NEW IMPORT: For the new premium compare screen
+import 'compare_result_page.dart';
+
 class _CategorySpec {
   final String name;
   final IconData icon;
@@ -121,33 +124,149 @@ class _HomePageState extends State<HomePage> {
     _startLocationTracking();
   }
 
+  // 🚀 UPGRADED: Premium Car Picker Bottom Sheet
   void _showComparePicker(bool isLeft) async {
     final selected = await showModalBottomSheet<Car?>(
       context: context,
       isScrollControlled: true,
+      backgroundColor: Colors.transparent,
       builder: (ctx) {
-        final list = _baseCars;
-        return SafeArea(
-          child: ListView.separated(
-            padding: EdgeInsets.all(12),
-            itemBuilder: (c, i) {
-              final car = list[i];
-              return ListTile(
-                leading: SizedBox(
-                  width: 72,
-                  height: 48,
-                  child: car.imageUrl != null
-                      ? Image.network(car.imageUrl!, fit: BoxFit.cover)
-                      : Image.asset(car.fallbackAssetPath, fit: BoxFit.cover),
-                ),
-                title: Text(car.name),
-                subtitle: Text('Rs ${car.pricePerDay.toStringAsFixed(0)}/day'),
-                onTap: () => Navigator.of(ctx).pop(car),
-              );
-            },
-            separatorBuilder: (_, __) => Divider(),
-            itemCount: list.length,
-          ),
+        String localSearchQuery = "";
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final list = _baseCars.where((car) {
+              final query = localSearchQuery.toLowerCase();
+              return car.name.toLowerCase().contains(query) ||
+                  car.model.toLowerCase().contains(query) ||
+                  car.type.toLowerCase().contains(query);
+            }).toList();
+
+            return Container(
+              height: MediaQuery.of(context).size.height * 0.85,
+              decoration: const BoxDecoration(
+                color: AppTheme.canvas,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              ),
+              child: Column(
+                children: [
+                  // Drag Handle
+                  Container(
+                    margin: const EdgeInsets.only(top: 12, bottom: 8),
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                    child: Text(
+                      'Select Car to Compare',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                        color: AppTheme.ink,
+                      ),
+                    ),
+                  ),
+                  // Search Bar
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    child: TextField(
+                      decoration: InputDecoration(
+                        hintText: 'Search cars...',
+                        prefixIcon: const Icon(
+                          Icons.search,
+                          color: AppTheme.primary,
+                        ),
+                        filled: true,
+                        fillColor: Colors.white,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                      onChanged: (val) {
+                        setModalState(() {
+                          localSearchQuery = val;
+                        });
+                      },
+                    ),
+                  ),
+                  // Car List
+                  Expanded(
+                    child: ListView.builder(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
+                      ),
+                      itemCount: list.length,
+                      itemBuilder: (c, i) {
+                        final car = list[i];
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: AppTheme.border),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.03),
+                                blurRadius: 8,
+                                offset: const Offset(0, 4),
+                              ),
+                            ],
+                          ),
+                          child: ListTile(
+                            contentPadding: const EdgeInsets.all(8),
+                            leading: ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: SizedBox(
+                                width: 80,
+                                height: 60,
+                                // 🚀 FIX: Using CarApiImage to prevent broken image errors
+                                child: CarApiImage(
+                                  imageUrl: car.imageUrl,
+                                  fallbackAssetPath: car.fallbackAssetPath,
+                                  fit: BoxFit.cover,
+                                ),
+                              ),
+                            ),
+                            title: Text(
+                              car.name,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.ink,
+                              ),
+                            ),
+                            subtitle: Text(
+                              '${car.year} • ${car.type}',
+                              style: const TextStyle(
+                                color: Colors.grey,
+                                fontSize: 12,
+                              ),
+                            ),
+                            trailing: Text(
+                              '₹${car.pricePerDay.toInt()}/day',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                                color: AppTheme.primary,
+                              ),
+                            ),
+                            onTap: () => Navigator.of(ctx).pop(car),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
         );
       },
     );
@@ -161,34 +280,20 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
+  // 🚀 UPGRADED: Navigate to the new premium CompareResultPage
   void _compareNow() {
     if (_compareLeft == null || _compareRight == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Please select two cars to compare')),
+        const SnackBar(content: Text('Please select two cars to compare')),
       );
       return;
     }
 
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('Compare'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('${_compareLeft!.name}  VS  ${_compareRight!.name}'),
-            SizedBox(height: 12),
-            Text(_compareLeft!.description),
-            SizedBox(height: 8),
-            Text(_compareRight!.description),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: Text('Close'),
-          ),
-        ],
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) =>
+            CompareResultPage(leftCar: _compareLeft!, rightCar: _compareRight!),
       ),
     );
   }
@@ -512,7 +617,6 @@ class _HomePageState extends State<HomePage> {
       }
     });
 
-    //Optional: Persist to Firestore (Favorites)
     try {
       final uid = currentUser?.uid;
       if (uid != null) {
@@ -596,7 +700,6 @@ class _HomePageState extends State<HomePage> {
         .where((car) => _matchesSearchQuery(car, normalizedQuery))
         .toList();
 
-    // When searching, show every matched result instead of 3-item preview.
     return filtered;
   }
 
@@ -1127,22 +1230,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _logout(BuildContext context) async {
-    // await FirebaseAuth.instance.signOut();
-
-    // // Navigate back to AuthWrapper
-    // // Check if the widget is still mounted before using its context for navigation.
-    // if (context.mounted) {
-    //   Navigator.of(context).pushAndRemoveUntil(
-    //     MaterialPageRoute(builder: (_) => const AuthWrapper()),
-    //     (route) => false,
-    //   );
-    // }
-
     await CarLocationTrackingService.instance.stopTracking();
     await UserPresenceService.markCurrentUserOffline();
     await FirebaseAuth.instance.signOut();
     await GoogleSignIn().signOut();
-    // Add a check to ensure the widget is still mounted before using its context.
     if (!context.mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => getstart.GetStart()),
@@ -1395,20 +1486,6 @@ class _HomePageState extends State<HomePage> {
                 const SizedBox(height: 16),
                 Row(
                   children: [
-                    OutlinedButton.icon(
-                      onPressed: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Add Car pressed')),
-                        );
-                      },
-                      icon: const Icon(Icons.add),
-                      label: const Text('Add Car'),
-                      style: OutlinedButton.styleFrom(
-                        minimumSize: const Size(0, 48),
-                        padding: const EdgeInsets.symmetric(horizontal: 18),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
                     Expanded(
                       child: ElevatedButton(
                         onPressed: _compareNow,
@@ -1421,7 +1498,7 @@ class _HomePageState extends State<HomePage> {
                           ),
                         ),
                         child: const Text(
-                          'Compare',
+                          'Compare Now',
                           style: TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.w700,

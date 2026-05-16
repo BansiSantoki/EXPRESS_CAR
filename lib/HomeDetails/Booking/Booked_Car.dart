@@ -10,18 +10,14 @@ import 'package:express_car/HomeDetails/Booking/payment_page.dart';
 
 class BookedCar extends StatefulWidget {
   final List<Map<String, dynamic>> bookedCars;
-  // The bookingTrigger is no longer needed.
-  // final int bookingTrigger;
 
-  const BookedCar({Key? key, required this.bookedCars}) : super(key: key);
+  const BookedCar({super.key, required this.bookedCars});
 
   @override
   State<BookedCar> createState() => _BookedCarState();
 }
 
 class _BookedCarState extends State<BookedCar> {
-  late List<Map<String, dynamic>> localBookedCars;
-
   final _firestore = FirebaseFirestore.instance;
   final _auth = FirebaseAuth.instance;
 
@@ -34,28 +30,42 @@ class _BookedCarState extends State<BookedCar> {
     }
 
     try {
-      await _firestore.collection('bookings').doc(bookingDocId).delete();
+      // Instead of deleting, we update the status to 'cancelled' to keep the record
+      await _firestore.collection('bookings').doc(bookingDocId).update({
+        'booking_status': 'cancelled',
+        'updated_at': FieldValue.serverTimestamp(),
+      });
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            '${car is Car ? car.name : 'Booking'} booking cancelled',
+            '${car != null ? car.name : 'Booking'} cancelled successfully',
           ),
         ),
       );
     } catch (e) {
       if (!mounted) return;
-      print('Failed to delete booking doc $bookingDocId: $e');
+      debugPrint('Failed to cancel booking doc $bookingDocId: $e');
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Failed to cancel booking: $e')));
     }
   }
 
+  // Helper to parse dates for local sorting
+  DateTime _parseDateTime(dynamic value) {
+    if (value is Timestamp) return value.toDate();
+    if (value is DateTime) return value;
+    if (value is String)
+      return DateTime.tryParse(value) ?? DateTime.fromMillisecondsSinceEpoch(0);
+    return DateTime.fromMillisecondsSinceEpoch(0);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: AppTheme.canvas,
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -63,12 +73,17 @@ class _BookedCarState extends State<BookedCar> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                "Booked Car",
+                "My Bookings",
                 style: TextStyle(
-                  fontSize: 34,
-                  fontWeight: FontWeight.w700,
-                  color: AppTheme.primary,
+                  fontSize: 30,
+                  fontWeight: FontWeight.w800,
+                  color: AppTheme.ink,
                 ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                "Track, manage, and review your rentals.",
+                style: TextStyle(color: AppTheme.primaryDark, fontSize: 14),
               ),
               const SizedBox(height: 20),
 
@@ -87,6 +102,8 @@ class _BookedCarState extends State<BookedCar> {
     }
 
     return StreamBuilder<QuerySnapshot>(
+      // 🚀 FIX: Removed .orderBy() to prevent the missing index crash.
+      // We will sort the documents locally in Dart instead.
       stream: _firestore
           .collection('bookings')
           .where('userId', isEqualTo: user.uid)
@@ -96,21 +113,52 @@ class _BookedCarState extends State<BookedCar> {
           return const Center(child: CircularProgressIndicator());
         }
         if (snapshot.hasError) {
-          return Center(child: Text("Error: ${snapshot.error}"));
+          debugPrint(snapshot.error.toString());
+          return const Center(child: Text("Unable to load bookings."));
         }
         if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-          return const Center(
-            child: Text(
-              "No Cars Booked Yet",
-              style: TextStyle(color: Colors.grey, fontSize: 16),
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.directions_car_outlined,
+                  size: 60,
+                  color: Colors.grey.shade400,
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  "No Cars Booked Yet",
+                  style: TextStyle(
+                    color: Colors.grey,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
             ),
           );
         }
 
-        return ListView(
-          children: snapshot.data!.docs.map((doc) {
-            return _buildBookingCard(doc);
-          }).toList(),
+        // 🚀 FIX: Sort documents locally by created_at descending
+        final docs = snapshot.data!.docs.toList();
+        docs.sort((a, b) {
+          final aData = a.data() as Map<String, dynamic>;
+          final bData = b.data() as Map<String, dynamic>;
+          final aTime = _parseDateTime(
+            aData['created_at'] ?? aData['createdAt'],
+          );
+          final bTime = _parseDateTime(
+            bData['created_at'] ?? bData['createdAt'],
+          );
+          return bTime.compareTo(aTime); // Descending order
+        });
+
+        return ListView.builder(
+          itemCount: docs.length,
+          itemBuilder: (context, index) {
+            return _buildBookingCard(docs[index]);
+          },
         );
       },
     );
@@ -137,6 +185,11 @@ class _BookedCarState extends State<BookedCar> {
           return Container(
             margin: const EdgeInsets.only(bottom: 16),
             height: 150,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: AppTheme.border),
+            ),
             child: const Center(child: CircularProgressIndicator()),
           );
         }
@@ -164,21 +217,110 @@ class _BookedCarState extends State<BookedCar> {
             ? booking['payment_method'].toString().trim()
             : 'cash_on_pickup';
 
+        final bookingStatus =
+            booking['booking_status']?.toString().toLowerCase() ?? 'pending';
+        final isCancelled = bookingStatus == 'cancelled';
+
+        // Driver & Verification Info
+        final driverName = booking['driver_name']?.toString() ?? '';
+        final driverPhone = booking['driver_details']?.toString() ?? '';
+        final verificationStatus =
+            booking['driver_verification_status']?.toString() ?? 'pending';
+
+        Widget driverInfoWidget = const SizedBox.shrink();
+
+        if (fleetType == 'with_driver') {
+          if (driverName.isNotEmpty) {
+            driverInfoWidget = Container(
+              margin: const EdgeInsets.only(top: 8, bottom: 4),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppTheme.primarySoft,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppTheme.border),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.person_pin,
+                    color: AppTheme.primary,
+                    size: 24,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Driver: $driverName',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            fontSize: 13,
+                            color: AppTheme.ink,
+                          ),
+                        ),
+                        if (driverPhone.isNotEmpty)
+                          Text(
+                            'Phone: $driverPhone',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: AppTheme.primaryDark,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          } else {
+            driverInfoWidget = Padding(
+              padding: const EdgeInsets.only(top: 6, bottom: 4),
+              child: Text(
+                'Driver: Pending Assignment',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.orange.shade800,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            );
+          }
+        } else if (fleetType == 'driverless') {
+          Color vColor = verificationStatus == 'approved'
+              ? const Color(0xFF166534)
+              : (verificationStatus == 'rejected'
+                    ? const Color(0xFF991B1B)
+                    : const Color(0xFF92400E));
+          driverInfoWidget = Padding(
+            padding: const EdgeInsets.only(top: 6, bottom: 4),
+            child: Text(
+              'Docs Verification: ${verificationStatus.toUpperCase()}',
+              style: TextStyle(
+                fontSize: 12,
+                color: vColor,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          );
+        }
+
         return Container(
-          margin: const EdgeInsets.only(bottom: 12),
+          margin: const EdgeInsets.only(bottom: 16),
           decoration: BoxDecoration(
             color: Colors.white,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: const Color(0xFFDDE3EE)),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppTheme.border),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.06),
+                color: Colors.black.withValues(alpha: 0.03),
                 blurRadius: 10,
                 offset: const Offset(0, 4),
               ),
             ],
           ),
-          padding: const EdgeInsets.all(10),
+          padding: const EdgeInsets.all(14),
           child: LayoutBuilder(
             builder: (context, constraints) {
               final isCompact = constraints.maxWidth < 380;
@@ -186,38 +328,72 @@ class _BookedCarState extends State<BookedCar> {
               final details = Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    car.name,
-                    style: const TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.ink,
-                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          car.name,
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                            color: isCancelled ? Colors.grey : AppTheme.ink,
+                            decoration: isCancelled
+                                ? TextDecoration.lineThrough
+                                : null,
+                          ),
+                        ),
+                      ),
+                      if (isCancelled)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFEE2E2),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Text(
+                            'CANCELLED',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                              color: Color(0xFF991B1B),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    "Start Date : ${startDate.isNotEmpty ? startDate.substring(0, 10) : 'N/A'}",
-                    style: const TextStyle(color: AppTheme.ink, fontSize: 14),
-                  ),
-                  Text(
-                    "End Date : ${endDate.isNotEmpty ? endDate.substring(0, 10) : 'N/A'}",
-                    style: const TextStyle(color: AppTheme.ink, fontSize: 14),
-                  ),
-                  Text(
-                    "Location : ${car.location}",
-                    style: const TextStyle(color: Colors.black54, fontSize: 14),
-                  ),
-                  Text(
-                    "Type : ${fleetType == 'with_driver' ? 'With Driver' : 'Driverless'}",
-                    style: const TextStyle(color: Colors.black54, fontSize: 14),
+                    "Dates: ${startDate.isNotEmpty ? startDate.substring(0, 10) : 'N/A'} to ${endDate.isNotEmpty ? endDate.substring(0, 10) : 'N/A'}",
+                    style: const TextStyle(
+                      color: AppTheme.primaryDark,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                   const SizedBox(height: 2),
+                  Text(
+                    "Location: ${car.location}",
+                    style: const TextStyle(color: Colors.black54, fontSize: 13),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    "Type: ${fleetType == 'with_driver' ? 'With Driver' : 'Driverless'}",
+                    style: const TextStyle(color: Colors.black54, fontSize: 13),
+                  ),
+
+                  driverInfoWidget,
+
+                  const SizedBox(height: 6),
                   _buildPaymentStatusBadge(paymentStatus),
-                  if (!isPaid)
+                  if (!isPaid && !isCancelled)
                     const Padding(
                       padding: EdgeInsets.only(top: 4),
                       child: Text(
-                        'Payment Mode: Cash on Pickup',
+                        'Payment Mode: Cash on Pickup/Delivery',
                         style: TextStyle(
                           fontSize: 11,
                           color: Color(0xFF6B7280),
@@ -259,22 +435,18 @@ class _BookedCarState extends State<BookedCar> {
 
               final cancelButton = Align(
                 alignment: Alignment.centerRight,
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF9DDCFF),
-                    foregroundColor: const Color(0xFF0D3A5B),
+                child: TextButton(
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.redAccent,
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 18,
-                      vertical: 10,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
+                      horizontal: 12,
+                      vertical: 8,
                     ),
                   ),
                   onPressed: () => cancelBooking(bookingDocId, car),
                   child: const Text(
-                    "Cancel",
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                    "Cancel Booking",
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
                   ),
                 ),
               );
@@ -379,6 +551,7 @@ class _BookedCarState extends State<BookedCar> {
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
                     ),
+                    elevation: 0,
                   ),
                   onPressed: () {
                     Navigator.push(
@@ -394,7 +567,7 @@ class _BookedCarState extends State<BookedCar> {
                   },
                   icon: const Icon(Icons.payments_outlined, size: 16),
                   label: const Text(
-                    'Payment Option',
+                    'Pay Online',
                     style: TextStyle(fontWeight: FontWeight.w700),
                   ),
                 ),
@@ -405,25 +578,30 @@ class _BookedCarState extends State<BookedCar> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
+                      borderRadius: BorderRadius.circular(12),
                       child: CarApiImage(
                         imageUrl: car.imageUrl,
                         fallbackAssetPath: car.fallbackAssetPath,
                         width: double.infinity,
-                        height: 126,
+                        height: 140,
                         fit: BoxFit.cover,
                       ),
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 12),
                     details,
-                    const SizedBox(height: 6),
-                    trackButton,
-                    const SizedBox(height: 6),
-                    if (!isPaid) ...[paymentButton, const SizedBox(height: 6)],
-                    if (isPaid) ...[paidBadge, const SizedBox(height: 6)],
-                    ratingButton,
-                    const SizedBox(height: 6),
-                    cancelButton,
+                    const SizedBox(height: 12),
+                    if (!isCancelled) ...[
+                      trackButton,
+                      const SizedBox(height: 8),
+                      if (!isPaid) ...[
+                        paymentButton,
+                        const SizedBox(height: 8),
+                      ],
+                      if (isPaid) ...[paidBadge, const SizedBox(height: 8)],
+                      ratingButton,
+                      const SizedBox(height: 8),
+                      cancelButton,
+                    ],
                   ],
                 );
               }
@@ -432,32 +610,34 @@ class _BookedCarState extends State<BookedCar> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(12),
                     child: CarApiImage(
                       imageUrl: car.imageUrl,
                       fallbackAssetPath: car.fallbackAssetPath,
-                      width: 126,
-                      height: 126,
+                      width: 130,
+                      height: 130,
                       fit: BoxFit.cover,
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 14),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         details,
-                        const SizedBox(height: 6),
-                        trackButton,
-                        const SizedBox(height: 6),
-                        if (!isPaid) ...[
-                          paymentButton,
-                          const SizedBox(height: 6),
+                        const SizedBox(height: 12),
+                        if (!isCancelled) ...[
+                          trackButton,
+                          const SizedBox(height: 8),
+                          if (!isPaid) ...[
+                            paymentButton,
+                            const SizedBox(height: 8),
+                          ],
+                          if (isPaid) ...[paidBadge, const SizedBox(height: 8)],
+                          ratingButton,
+                          const SizedBox(height: 4),
+                          cancelButton,
                         ],
-                        if (isPaid) ...[paidBadge, const SizedBox(height: 6)],
-                        ratingButton,
-                        const SizedBox(height: 6),
-                        cancelButton,
                       ],
                     ),
                   ),
@@ -571,16 +751,16 @@ class _BookedCarState extends State<BookedCar> {
     }
 
     return Container(
-      margin: const EdgeInsets.only(top: 2),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         color: bg,
-        borderRadius: BorderRadius.circular(999),
+        borderRadius: BorderRadius.circular(8),
         border: Border.all(color: border),
       ),
       child: Text(
         text,
-        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: fg),
+        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: fg),
       ),
     );
   }

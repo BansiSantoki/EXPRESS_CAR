@@ -32,6 +32,13 @@ class _BookingPageState extends State<BookingPage> {
   bool _isBooking = false;
   String _rentalUnit = 'day';
   late String _selectedFleetType;
+
+  // Dynamic Pricing State
+  bool _isLoadingSettings = true;
+  double _surchargePercentage = 15.0; // Default fallback
+  double _deliveryFee = 30.0; // Default fallback
+  bool _isDeliveryRequired = false;
+
   final TextEditingController _pickupLocationController =
       TextEditingController();
   final TextEditingController _driverNameController = TextEditingController();
@@ -48,6 +55,7 @@ class _BookingPageState extends State<BookingPage> {
     _pickupLocationController.text = widget.car.location == 'Unknown'
         ? ''
         : widget.car.location;
+    _fetchGlobalSettings(); // Fetch live pricing from Admin
   }
 
   @override
@@ -61,13 +69,38 @@ class _BookingPageState extends State<BookingPage> {
     super.dispose();
   }
 
+  // Fetch Global Settings from Firestore
+  Future<void> _fetchGlobalSettings() async {
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('settings')
+          .doc('global_config')
+          .get();
+      if (doc.exists && mounted) {
+        final data = doc.data()!;
+        setState(() {
+          _surchargePercentage =
+              (data['driverless_surcharge_percentage'] as num?)?.toDouble() ??
+              15.0;
+          _deliveryFee = (data['delivery_fee'] as num?)?.toDouble() ?? 30.0;
+          _isLoadingSettings = false;
+        });
+      } else if (mounted) {
+        setState(() => _isLoadingSettings = false);
+      }
+    } catch (e) {
+      debugPrint("Error fetching global settings: $e");
+      if (mounted) setState(() => _isLoadingSettings = false);
+    }
+  }
+
   bool _validateBookingDetails() {
     final pickupLocation = _pickupLocationController.text.trim();
 
     if (pickupLocation.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Please enter pickup location.'),
+          content: Text('Please enter pickup/delivery location.'),
           backgroundColor: Colors.red,
         ),
       );
@@ -100,12 +133,12 @@ class _BookingPageState extends State<BookingPage> {
     }
   }
 
+  // Uses dynamic surcharge percentage
   int _calculateDriverlessSurcharge(int baseUnitPrice) {
     if (_selectedFleetType != 'driverless') {
       return 0;
     }
-    // Driverless requires extra verification and risk coverage.
-    return math.max(100, (baseUnitPrice * 0.15).ceil());
+    return (baseUnitPrice * (_surchargePercentage / 100)).ceil();
   }
 
   bool _validateDriverDocuments() {
@@ -148,8 +181,8 @@ class _BookingPageState extends State<BookingPage> {
     final DateTime? picked = await showDatePicker(
       context: context,
       initialDate: DateTime.now(),
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2030),
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
     );
 
     if (picked != null) {
@@ -182,9 +215,6 @@ class _BookingPageState extends State<BookingPage> {
     }
   }
 
-  /// -------------------------------------------------------------
-  /// REAL-TIME BOOKING CHECK (NO UI CHANGE)
-  /// -------------------------------------------------------------
   int _generateBookingId() {
     return DateTime.now().millisecondsSinceEpoch;
   }
@@ -211,7 +241,6 @@ class _BookingPageState extends State<BookingPage> {
         continue;
       }
 
-      // If date range overlaps → reject
       if (start.isBefore(e) && end.isAfter(s)) {
         return true;
       }
@@ -284,25 +313,30 @@ class _BookingPageState extends State<BookingPage> {
     return null;
   }
 
-  /// -------------------------------------------------------------
-
   @override
   Widget build(BuildContext context) {
     final car = widget.car;
-    // Calculate rental days and total dynamically
+
     int rentalDays = 0;
     if (startDate != null && endDate != null) {
       if (!endDate!.isBefore(startDate!)) {
         rentalDays = endDate!.difference(startDate!).inDays + 1;
       }
     }
+
     final int rentalQuantity = _calculateRentalQuantity(rentalDays);
     final int baseUnitPrice = _calculateBaseUnitPrice(car);
     final int driverlessSurchargePerUnit = _calculateDriverlessSurcharge(
       baseUnitPrice,
     );
     final int unitPrice = baseUnitPrice + driverlessSurchargePerUnit;
-    final int totalAmount = rentalQuantity * unitPrice;
+
+    final int deliveryCost = _isDeliveryRequired ? _deliveryFee.toInt() : 0;
+    final int totalAmount = (rentalQuantity * unitPrice) + deliveryCost;
+
+    // 🚀 NEW: Validation boolean for the button
+    final bool hasValidDates =
+        startDate != null && endDate != null && rentalQuantity > 0;
 
     return Scaffold(
       backgroundColor: AppTheme.canvas,
@@ -321,668 +355,717 @@ class _BookingPageState extends State<BookingPage> {
           onPressed: () => Navigator.pop(context),
         ),
       ),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(8.0),
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                /// Car Image
-                ClipRRect(
-                  borderRadius: const BorderRadius.all(Radius.circular(24)),
-                  child: CarApiImage(
-                    imageUrl: car.imageUrl,
-                    fallbackAssetPath: car.fallbackAssetPath,
-                    height: 250,
-                    width: double.infinity,
-                    fit: BoxFit.cover,
-                  ),
-                ),
-
-                /// Car Name & Details
-                Padding(
-                  padding: const EdgeInsets.all(12),
+      body: _isLoadingSettings
+          ? const Center(child: CircularProgressIndicator())
+          : Center(
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: SingleChildScrollView(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        car.name,
-                        style: const TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.w800,
-                          color: AppTheme.ink,
+                      /// Car Image
+                      ClipRRect(
+                        borderRadius: const BorderRadius.all(
+                          Radius.circular(24),
+                        ),
+                        child: CarApiImage(
+                          imageUrl: car.imageUrl,
+                          fallbackAssetPath: car.fallbackAssetPath,
+                          height: 250,
+                          width: double.infinity,
+                          fit: BoxFit.cover,
                         ),
                       ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              '${car.model} • ${car.year}',
+
+                      /// Car Name & Details
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              car.name,
+                              style: const TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.w800,
+                                color: AppTheme.ink,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    '${car.model} • ${car.year}',
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      color: Color(0xFF6B7280),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Divider(),
+
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 12),
+                            const Text(
+                              'Rental Type',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.ink,
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            Wrap(
+                              spacing: 10,
+                              children: [
+                                ChoiceChip(
+                                  label: const Text('Driverless'),
+                                  selected: _selectedFleetType == 'driverless',
+                                  onSelected: (_) {
+                                    setState(
+                                      () => _selectedFleetType = 'driverless',
+                                    );
+                                  },
+                                ),
+                                ChoiceChip(
+                                  label: const Text('With Driver'),
+                                  selected: _selectedFleetType == 'with_driver',
+                                  onSelected: (_) {
+                                    setState(
+                                      () => _selectedFleetType = 'with_driver',
+                                    );
+                                  },
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              _selectedFleetType == 'with_driver'
+                                  ? 'With Driver selected: A professional driver will be assigned with this booking.'
+                                  : 'Driverless selected: You will self-drive the car with mandatory document verification and a ${_surchargePercentage.toStringAsFixed(0)}% surcharge.',
                               style: const TextStyle(
                                 fontSize: 14,
-                                color: Color(0xFF6B7280),
+                                color: Color(0xFF4B5563),
+                                fontWeight: FontWeight.w500,
                               ),
                             ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                const Divider(),
-
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const SizedBox(height: 12),
-                      const Text(
-                        'Rental Type',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.ink,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      Wrap(
-                        spacing: 10,
-                        children: [
-                          ChoiceChip(
-                            label: const Text('Driverless'),
-                            selected: _selectedFleetType == 'driverless',
-                            onSelected: (_) {
-                              setState(() => _selectedFleetType = 'driverless');
-                            },
-                          ),
-                          ChoiceChip(
-                            label: const Text('With Driver'),
-                            selected: _selectedFleetType == 'with_driver',
-                            onSelected: (_) {
-                              setState(
-                                () => _selectedFleetType = 'with_driver',
-                              );
-                            },
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        _selectedFleetType == 'with_driver'
-                            ? 'With Driver selected: A professional driver will be assigned with this booking.'
-                            : 'Driverless selected: You will self-drive the car with mandatory document verification and extra charge.',
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: Color(0xFF4B5563),
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      if (_selectedFleetType == 'driverless') ...[
-                        const SizedBox(height: 14),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: AppTheme.primarySoft,
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                'Driver Documents (Required)',
-                                style: TextStyle(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w700,
-                                  color: AppTheme.ink,
-                                ),
-                              ),
-                              const SizedBox(height: 10),
-                              _buildDocumentField(
-                                label: 'Driver Name',
-                                hint: 'Enter driver name',
-                                controller: _driverNameController,
-                              ),
-                              const SizedBox(height: 10),
-                              _buildDocumentField(
-                                label: 'Driver Details',
-                                hint: 'Enter driver details',
-                                controller: _driverDetailsController,
-                              ),
-                              const SizedBox(height: 10),
-                              _buildDocumentField(
-                                label: 'Aadhar Card Number',
-                                hint: '12-digit Aadhar number',
-                                controller: _aadharController,
-                                keyboardType: TextInputType.number,
-                              ),
-                              const SizedBox(height: 10),
-                              _buildDocumentField(
-                                label: 'Driving License Number',
-                                hint: 'Enter license number',
-                                controller: _licenseController,
-                              ),
-                              const SizedBox(height: 10),
-                              _buildDocumentField(
-                                label: 'PAN Card Number',
-                                hint: 'ABCDE1234F',
-                                controller: _panController,
-                                textCapitalization:
-                                    TextCapitalization.characters,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-                const Divider(),
-
-                /// Trip Dates
-                Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Expanded(
-                        child: buildDateColumn("Starting Date", startDate, () {
-                          pickDate(isStart: true);
-                        }),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: buildDateColumn("Ending Date", endDate, () {
-                          pickDate(isStart: false);
-                        }),
-                      ),
-                    ],
-                  ),
-                ),
-                const Divider(),
-
-                /// Location
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const SizedBox(height: 12),
-                      Text(
-                        "Pickup & Return Location",
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w600,
-                          color: AppTheme.ink,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextFormField(
-                        controller: _pickupLocationController,
-                        decoration: InputDecoration(
-                          hintText: 'Enter pickup and return location',
-                          prefixIcon: const Icon(
-                            Icons.location_on_outlined,
-                            color: AppTheme.primary,
-                          ),
-                          filled: true,
-                          fillColor: Colors.white,
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(
-                              color: Color(0xFFD1D5DB),
-                            ),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(
-                              color: Color(0xFFD1D5DB),
-                            ),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(
-                              color: AppTheme.primary,
-                              width: 1.3,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const Divider(),
-
-                /// Features
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const SizedBox(height: 12),
-                      const Text(
-                        "Car Basics & Features",
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.ink,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      GridView.builder(
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(),
-                        itemCount: car.features.length,
-                        gridDelegate:
-                            const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 2,
-                              mainAxisSpacing: 12,
-                              crossAxisSpacing: 20,
-                              childAspectRatio: 4,
-                            ),
-                        itemBuilder: (context, index) {
-                          final f = car.features[index];
-                          return Row(
-                            crossAxisAlignment: CrossAxisAlignment.center,
-                            children: [
+                            if (_selectedFleetType == 'driverless') ...[
+                              const SizedBox(height: 14),
                               Container(
-                                width: 7,
-                                height: 8,
-                                decoration: const BoxDecoration(
-                                  color: AppTheme.primary,
-                                  shape: BoxShape.circle,
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: AppTheme.primarySoft,
+                                  borderRadius: BorderRadius.circular(12),
                                 ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  f,
-                                  style: const TextStyle(
-                                    fontSize: 16,
-                                    color: Color(0xFF4B5563),
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      'Driver Documents (Required)',
+                                      style: TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w700,
+                                        color: AppTheme.ink,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 10),
+                                    _buildDocumentField(
+                                      label: 'Driver Name',
+                                      hint: 'Enter driver name',
+                                      controller: _driverNameController,
+                                    ),
+                                    const SizedBox(height: 10),
+                                    _buildDocumentField(
+                                      label: 'Driver Details',
+                                      hint: 'Enter driver details',
+                                      controller: _driverDetailsController,
+                                    ),
+                                    const SizedBox(height: 10),
+                                    _buildDocumentField(
+                                      label: 'Aadhar Card Number',
+                                      hint: '12-digit Aadhar number',
+                                      controller: _aadharController,
+                                      keyboardType: TextInputType.number,
+                                    ),
+                                    const SizedBox(height: 10),
+                                    _buildDocumentField(
+                                      label: 'Driving License Number',
+                                      hint: 'Enter license number',
+                                      controller: _licenseController,
+                                    ),
+                                    const SizedBox(height: 10),
+                                    _buildDocumentField(
+                                      label: 'PAN Card Number',
+                                      hint: 'ABCDE1234F',
+                                      controller: _panController,
+                                      textCapitalization:
+                                          TextCapitalization.characters,
+                                    ),
+                                  ],
                                 ),
                               ),
                             ],
-                          );
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-                const Divider(),
-
-                Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(
-                    "Description",
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: AppTheme.ink,
-                    ),
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Text(
-                    car.description,
-                    style: const TextStyle(fontSize: 15, color: Colors.black87),
-                  ),
-                ),
-                const Divider(),
-
-                /// Warning
-                Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        "Warning",
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w600,
-                          color: AppTheme.ink,
+                          ],
                         ),
                       ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: const [
-                          SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              "Payment will be required at the time of car pick-up.",
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: AppTheme.accent,
-                                fontWeight: FontWeight.w600,
+                      const Divider(),
+
+                      /// Trip Dates
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: buildDateColumn(
+                                "Starting Date",
+                                startDate,
+                                () {
+                                  pickDate(isStart: true);
+                                },
                               ),
                             ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: AppTheme.primarySoft,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.schedule,
-                          color: AppTheme.primary,
-                          size: 18,
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: buildDateColumn(
+                                "Ending Date",
+                                endDate,
+                                () {
+                                  pickDate(isStart: false);
+                                },
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 10),
-                        const Text(
-                          'Rental Unit',
+                      ),
+                      const Divider(),
+
+                      /// Location
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 12),
+                            const Text(
+                              "Pickup & Return Location",
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                                color: AppTheme.ink,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            TextFormField(
+                              controller: _pickupLocationController,
+                              decoration: InputDecoration(
+                                hintText: 'Enter pickup/delivery location',
+                                prefixIcon: const Icon(
+                                  Icons.location_on_outlined,
+                                  color: AppTheme.primary,
+                                ),
+                                filled: true,
+                                fillColor: Colors.white,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(
+                                    color: Color(0xFFD1D5DB),
+                                  ),
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(
+                                    color: Color(0xFFD1D5DB),
+                                  ),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(
+                                    color: AppTheme.primary,
+                                    width: 1.3,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Container(
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: AppTheme.border),
+                              ),
+                              child: SwitchListTile(
+                                title: const Text(
+                                  "Require Car Delivery?",
+                                  style: TextStyle(fontWeight: FontWeight.w600),
+                                ),
+                                subtitle: Text(
+                                  "Additional delivery fee of ₹${_deliveryFee.toStringAsFixed(0)} applies.",
+                                ),
+                                value: _isDeliveryRequired,
+                                activeColor: AppTheme.primary,
+                                onChanged: (val) =>
+                                    setState(() => _isDeliveryRequired = val),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Divider(),
+
+                      /// Features
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 12),
+                            const Text(
+                              "Car Basics & Features",
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.ink,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            GridView.builder(
+                              shrinkWrap: true,
+                              physics: const NeverScrollableScrollPhysics(),
+                              itemCount: car.features.length,
+                              gridDelegate:
+                                  const SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 2,
+                                    mainAxisSpacing: 12,
+                                    crossAxisSpacing: 20,
+                                    childAspectRatio: 4,
+                                  ),
+                              itemBuilder: (context, index) {
+                                final f = car.features[index];
+                                return Row(
+                                  crossAxisAlignment: CrossAxisAlignment.center,
+                                  children: [
+                                    Container(
+                                      width: 7,
+                                      height: 8,
+                                      decoration: const BoxDecoration(
+                                        color: AppTheme.primary,
+                                        shape: BoxShape.circle,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        f,
+                                        style: const TextStyle(
+                                          fontSize: 16,
+                                          color: Color(0xFF4B5563),
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ],
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Divider(),
+
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: const Text(
+                          "Description",
                           style: TextStyle(
-                            fontSize: 14,
+                            fontSize: 18,
                             fontWeight: FontWeight.w600,
                             color: AppTheme.ink,
                           ),
                         ),
-                        const Spacer(),
-                        DropdownButtonHideUnderline(
-                          child: DropdownButton<String>(
-                            value: _rentalUnit,
-                            items: const [
-                              DropdownMenuItem(
-                                value: 'day',
-                                child: Text('Day'),
-                              ),
-                              DropdownMenuItem(
-                                value: 'week',
-                                child: Text('Week'),
-                              ),
-                              DropdownMenuItem(
-                                value: 'month',
-                                child: Text('Month'),
-                              ),
-                            ],
-                            onChanged: (value) {
-                              if (value != null) {
-                                setState(() => _rentalUnit = value);
-                              }
-                            },
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Text(
+                          car.description,
+                          style: const TextStyle(
+                            fontSize: 15,
+                            color: Colors.black87,
                           ),
                         ),
-                      ],
-                    ),
-                  ),
-                ),
-
-                if (rentalDays > 0)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-                    child: Text(
-                      'Duration: $rentalDays day(s) • Billable: $rentalQuantity $_rentalUnit(s) @ ₹$unitPrice/$_rentalUnit',
-                      style: const TextStyle(
-                        fontSize: 13,
-                        color: AppTheme.primaryDark,
-                        fontWeight: FontWeight.w600,
                       ),
-                    ),
-                  ),
-                if (rentalDays > 0 && driverlessSurchargePerUnit > 0)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
-                    child: Text(
-                      'Driverless surcharge: ₹$driverlessSurchargePerUnit/$_rentalUnit (included in total)',
-                      style: const TextStyle(
-                        fontSize: 13,
-                        color: AppTheme.accent,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
+                      const Divider(),
 
-                /// Book Button
-                Container(
-                  width: double.infinity,
-                  margin: const EdgeInsets.all(12),
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.primary,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      elevation: 0,
-                    ),
-                    onPressed: _isBooking
-                        ? null
-                        : () async {
-                            final user = await _ensureSignedIn();
-                            if (user == null) return;
-                            if (!_validateBookingDetails()) return;
-                            if (!_validateDriverDocuments()) return;
-
-                            if (startDate != null && endDate != null) {
-                              /// ----------------------------
-                              /// REAL-TIME DATE CHECK
-                              /// ----------------------------
-                              if (isCarAlreadyBooked(startDate!, endDate!)) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      "Car already booked for selected dates",
-                                    ),
-                                    backgroundColor: Colors.red,
-                                  ),
-                                );
-                                return;
-                              }
-                              // compute booking details
-                              final startIso = DateTime(
-                                startDate!.year,
-                                startDate!.month,
-                                startDate!.day,
-                              ).toIso8601String();
-                              final endIso = DateTime(
-                                endDate!.year,
-                                endDate!.month,
-                                endDate!.day,
-                              ).toIso8601String();
-
-                              setState(() => _isBooking = true);
-
-                              try {
-                                final bookingId = _generateBookingId();
-                                final userEmail = user.email ?? 'unknown';
-                                final driverlessSurchargeTotal =
-                                    driverlessSurchargePerUnit * rentalQuantity;
-
-                                final bookingData = {
-                                  'booking_id': bookingId,
-                                  'car_id': widget.car.carId,
-                                  'car_name': widget.car.name,
-                                  'image_url': widget.car.imageUrl,
-                                  'car_source_collection':
-                                      widget.car.sourceCollection,
-                                  'car_source_doc_id': widget.car.sourceDocId,
-                                  'fleet_type': _selectedFleetType,
-                                  'fleetType': _selectedFleetType,
-                                  'user_mail': userEmail,
-                                  'userId': user.uid,
-                                  'owner_email': widget.car.ownerEmail ?? '',
-                                  'rental_unit': _rentalUnit,
-                                  'rental_quantity': rentalQuantity,
-                                  'base_unit_price': baseUnitPrice,
-                                  'driverless_surcharge_per_unit':
-                                      driverlessSurchargePerUnit,
-                                  'driverless_surcharge_total':
-                                      driverlessSurchargeTotal,
-                                  'unit_price': unitPrice,
-                                  'start_date': startIso,
-                                  'end_date': endIso,
-                                  'pickup_location': _pickupLocationController
-                                      .text
-                                      .trim(),
-                                  'car_year': widget.car.year,
-                                  'pickup_lat': widget.car.locationLat,
-                                  'pickup_lng': widget.car.locationLng,
-                                  'location_tracking_enabled': true,
-                                  'driver_documents_required':
-                                      _selectedFleetType == 'driverless',
-                                  'total_amount': totalAmount,
-                                  'payment_status': 'pending',
-                                  'payment_method': 'cash_on_pickup',
-                                  'payment_amount': totalAmount,
-                                  'payment_id': '',
-                                  'payment_order_id': '',
-                                  'transaction_ref': '',
-                                  'payment_time': null,
-                                  'paid_at': null,
-                                  'created_at': FieldValue.serverTimestamp(),
-                                  if (_selectedFleetType == 'driverless')
-                                    'driver_name': _driverNameController.text
-                                        .trim(),
-                                  if (_selectedFleetType == 'driverless')
-                                    'driver_details': _driverDetailsController
-                                        .text
-                                        .trim(),
-                                  if (_selectedFleetType == 'driverless')
-                                    'driver_documents': {
-                                      'driver_name': _driverNameController.text
-                                          .trim(),
-                                      'driver_details': _driverDetailsController
-                                          .text
-                                          .trim(),
-                                      'aadhar_card': _aadharController.text
-                                          .trim(),
-                                      'license_number': _licenseController.text
-                                          .trim(),
-                                      'pan_card': _panController.text
-                                          .trim()
-                                          .toUpperCase(),
-                                    },
-                                };
-
-                                // Save booking to Firestore under 'bookings' collection
-                                await FirebaseFirestore.instance
-                                    .collection('bookings')
-                                    .doc(bookingId.toString())
-                                    .set(bookingData);
-
-                                if (!mounted) return;
-                                await Navigator.pushReplacement(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) => BookingDetailsPage(
-                                      booking: bookingData,
-                                    ),
-                                  ),
-                                );
-                              } on FirebaseException catch (e) {
-                                // Handle Firestore permission errors specifically
-                                final isPermissionError =
-                                    e.code == 'permission-denied' ||
-                                    (e.message != null &&
-                                        e.message!.toLowerCase().contains(
-                                          'permission',
-                                        ));
-
-                                if (isPermissionError) {
-                                  // Show a blocking dialog with guidance
-                                  if (mounted) {
-                                    await showDialog<void>(
-                                      context: context,
-                                      builder: (ctx) => AlertDialog(
-                                        title: const Text('Permission Denied'),
-                                        content: const Text(
-                                          'Cloud Firestore: permission denied — caller does not have permission to perform this operation.\n\nCheck your Firestore security rules or ensure the user is authenticated.',
-                                        ),
-                                        actions: [
-                                          TextButton(
-                                            onPressed: () =>
-                                                Navigator.of(ctx).pop(),
-                                            child: const Text('OK'),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                  }
-                                  // Also log for debugging
-                                  print(
-                                    'Firestore permission denied: ${e.message}',
-                                  );
-                                } else {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        'Failed to save booking: ${e.message}',
-                                      ),
-                                      backgroundColor: Colors.red,
-                                    ),
-                                  );
-                                }
-                              } catch (e) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text('Failed to save booking: $e'),
-                                    backgroundColor: Colors.red,
-                                  ),
-                                );
-                              } finally {
-                                if (mounted) setState(() => _isBooking = false);
-                              }
-                            } else {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text(
-                                    "Please select both start and end dates",
-                                  ),
-                                  backgroundColor: Colors.red,
-                                ),
-                              );
-                            }
-                          },
-                    child: _isBooking
-                        ? const SizedBox(
-                            height: 20,
-                            width: 20,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2,
+                      /// Warning
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              "Warning",
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                                color: AppTheme.ink,
+                              ),
                             ),
-                          )
-                        : Text(
-                            // Show dynamic total when both dates are selected, otherwise show 0
-                            startDate != null &&
-                                    endDate != null &&
-                                    rentalQuantity > 0
-                                ? "Total ₹$totalAmount (${rentalQuantity} ${_rentalUnit}${rentalQuantity > 1 ? 's' : ''})"
-                                : "Total ₹0",
+                            const SizedBox(height: 12),
+                            Row(
+                              children: const [
+                                SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    "Payment will be required at the time of car pick-up or delivery.",
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: AppTheme.accent,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppTheme.primarySoft,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.schedule,
+                                color: AppTheme.primary,
+                                size: 18,
+                              ),
+                              const SizedBox(width: 10),
+                              const Text(
+                                'Rental Unit',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppTheme.ink,
+                                ),
+                              ),
+                              const Spacer(),
+                              DropdownButtonHideUnderline(
+                                child: DropdownButton<String>(
+                                  value: _rentalUnit,
+                                  items: const [
+                                    DropdownMenuItem(
+                                      value: 'day',
+                                      child: Text('Day'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'week',
+                                      child: Text('Week'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'month',
+                                      child: Text('Month'),
+                                    ),
+                                  ],
+                                  onChanged: (value) {
+                                    if (value != null) {
+                                      setState(() => _rentalUnit = value);
+                                    }
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+
+                      if (rentalDays > 0)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+                          child: Text(
+                            'Duration: $rentalDays day(s) • Billable: $rentalQuantity $_rentalUnit(s) @ ₹$unitPrice/$_rentalUnit',
                             style: const TextStyle(
-                              fontSize: 16,
-                              color: Colors.white,
+                              fontSize: 13,
+                              color: AppTheme.primaryDark,
                               fontWeight: FontWeight.w600,
                             ),
-                            textAlign: TextAlign.center,
                           ),
+                        ),
+                      if (rentalDays > 0 && driverlessSurchargePerUnit > 0)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+                          child: Text(
+                            'Driverless surcharge: ₹$driverlessSurchargePerUnit/$_rentalUnit (${_surchargePercentage.toStringAsFixed(0)}% included)',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: AppTheme.accent,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      if (rentalDays > 0 && _isDeliveryRequired)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+                          child: Text(
+                            'Delivery Fee: ₹${_deliveryFee.toStringAsFixed(0)} (included in total)',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: Colors.green,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+
+                      /// 🚀 UPDATED: Dynamic Book Button
+                      Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.all(12),
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppTheme.primary,
+                            disabledBackgroundColor: Colors.grey.shade400,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            elevation: 0,
+                          ),
+                          onPressed: (_isBooking || !hasValidDates)
+                              ? null
+                              : () async {
+                                  final user = await _ensureSignedIn();
+                                  if (user == null) return;
+                                  if (!_validateBookingDetails()) return;
+                                  if (!_validateDriverDocuments()) return;
+
+                                  if (isCarAlreadyBooked(
+                                    startDate!,
+                                    endDate!,
+                                  )) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                          "Car already booked for selected dates",
+                                        ),
+                                        backgroundColor: Colors.red,
+                                      ),
+                                    );
+                                    return;
+                                  }
+
+                                  final startIso = DateTime(
+                                    startDate!.year,
+                                    startDate!.month,
+                                    startDate!.day,
+                                  ).toIso8601String();
+                                  final endIso = DateTime(
+                                    endDate!.year,
+                                    endDate!.month,
+                                    endDate!.day,
+                                  ).toIso8601String();
+
+                                  setState(() => _isBooking = true);
+
+                                  try {
+                                    final bookingId = _generateBookingId();
+                                    final userEmail = user.email ?? 'unknown';
+                                    final driverlessSurchargeTotal =
+                                        driverlessSurchargePerUnit *
+                                        rentalQuantity;
+
+                                    final bookingData = {
+                                      'booking_id': bookingId,
+                                      'car_id': widget.car.carId,
+                                      'car_name': widget.car.name,
+                                      'image_url': widget.car.imageUrl,
+                                      'car_source_collection':
+                                          widget.car.sourceCollection,
+                                      'car_source_doc_id':
+                                          widget.car.sourceDocId,
+                                      'fleet_type': _selectedFleetType,
+                                      'fleetType': _selectedFleetType,
+                                      'user_mail': userEmail,
+                                      'userId': user.uid,
+                                      'owner_email':
+                                          widget.car.ownerEmail ?? '',
+                                      'rental_unit': _rentalUnit,
+                                      'rental_quantity': rentalQuantity,
+                                      'base_unit_price': baseUnitPrice,
+                                      'driverless_surcharge_per_unit':
+                                          driverlessSurchargePerUnit,
+                                      'driverless_surcharge_total':
+                                          driverlessSurchargeTotal,
+                                      'delivery_required': _isDeliveryRequired,
+                                      'delivery_fee': deliveryCost,
+                                      'unit_price': unitPrice,
+                                      'start_date': startIso,
+                                      'end_date': endIso,
+                                      'pickup_location':
+                                          _pickupLocationController.text.trim(),
+                                      'car_year': widget.car.year,
+                                      'pickup_lat': widget.car.locationLat,
+                                      'pickup_lng': widget.car.locationLng,
+                                      'location_tracking_enabled': true,
+                                      'driver_documents_required':
+                                          _selectedFleetType == 'driverless',
+                                      'driver_verification_status':
+                                          _selectedFleetType == 'driverless'
+                                          ? 'pending'
+                                          : 'not_required',
+                                      'total_amount': totalAmount,
+                                      'payment_status': 'pending',
+                                      'payment_method': 'cash_on_pickup',
+                                      'payment_amount': totalAmount,
+                                      'payment_id': '',
+                                      'payment_order_id': '',
+                                      'transaction_ref': '',
+                                      'payment_time': null,
+                                      'paid_at': null,
+                                      'created_at':
+                                          FieldValue.serverTimestamp(),
+                                      if (_selectedFleetType == 'driverless')
+                                        'driver_name': _driverNameController
+                                            .text
+                                            .trim(),
+                                      if (_selectedFleetType == 'driverless')
+                                        'driver_details':
+                                            _driverDetailsController.text
+                                                .trim(),
+                                      if (_selectedFleetType == 'driverless')
+                                        'driver_documents': {
+                                          'driver_name': _driverNameController
+                                              .text
+                                              .trim(),
+                                          'driver_details':
+                                              _driverDetailsController.text
+                                                  .trim(),
+                                          'aadhar_card': _aadharController.text
+                                              .trim(),
+                                          'license_number': _licenseController
+                                              .text
+                                              .trim(),
+                                          'pan_card': _panController.text
+                                              .trim()
+                                              .toUpperCase(),
+                                        },
+                                    };
+
+                                    await FirebaseFirestore.instance
+                                        .collection('bookings')
+                                        .doc(bookingId.toString())
+                                        .set(bookingData);
+
+                                    if (!mounted) return;
+                                    await Navigator.pushReplacement(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => BookingDetailsPage(
+                                          booking: bookingData,
+                                        ),
+                                      ),
+                                    );
+                                  } on FirebaseException catch (e) {
+                                    final isPermissionError =
+                                        e.code == 'permission-denied' ||
+                                        (e.message != null &&
+                                            e.message!.toLowerCase().contains(
+                                              'permission',
+                                            ));
+
+                                    if (isPermissionError) {
+                                      if (mounted) {
+                                        await showDialog<void>(
+                                          context: context,
+                                          builder: (ctx) => AlertDialog(
+                                            title: const Text(
+                                              'Permission Denied',
+                                            ),
+                                            content: const Text(
+                                              'Cloud Firestore: permission denied — caller does not have permission to perform this operation.\n\nCheck your Firestore security rules or ensure the user is authenticated.',
+                                            ),
+                                            actions: [
+                                              TextButton(
+                                                onPressed: () =>
+                                                    Navigator.of(ctx).pop(),
+                                                child: const Text('OK'),
+                                              ),
+                                            ],
+                                          ),
+                                        );
+                                      }
+                                    } else {
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            'Failed to save booking: ${e.message}',
+                                          ),
+                                          backgroundColor: Colors.red,
+                                        ),
+                                      );
+                                    }
+                                  } catch (e) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          'Failed to save booking: $e',
+                                        ),
+                                        backgroundColor: Colors.red,
+                                      ),
+                                    );
+                                  } finally {
+                                    if (mounted)
+                                      setState(() => _isBooking = false);
+                                  }
+                                },
+                          child: _isBooking
+                              ? const SizedBox(
+                                  height: 20,
+                                  width: 20,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : Text(
+                                  hasValidDates
+                                      ? "Total ₹$totalAmount ($rentalQuantity $_rentalUnit${rentalQuantity > 1 ? 's' : ''})"
+                                      : "Select Dates to Calculate",
+                                  style: const TextStyle(
+                                    fontSize: 16,
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-              ],
+              ),
             ),
-          ),
-        ),
-      ),
     );
   }
 

@@ -17,6 +17,11 @@ class _GetStartState extends State<GetStart>
   late Animation<double> _fadeAnimation;
   late Animation<Offset> _slideAnimation;
 
+  // Futures for optimized database queries
+  late Future<int> _carsCountFuture;
+  late Future<int> _usersCountFuture;
+  late Future<double> _ratingFuture;
+
   @override
   void initState() {
     super.initState();
@@ -35,12 +40,66 @@ class _GetStartState extends State<GetStart>
         );
 
     _animationController.forward();
+
+    // Initialize the futures once so they don't re-fetch on UI rebuilds
+    _carsCountFuture = _getCarsCount();
+    _usersCountFuture = _getUsersCount();
+    _ratingFuture = _getAverageRating();
   }
 
   @override
   void dispose() {
     _animationController.dispose();
     super.dispose();
+  }
+
+  // 🚀 OPTIMIZATION: Use server-side count() instead of downloading all documents
+  Future<int> _getCarsCount() async {
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('cars')
+          .count()
+          .get();
+      return snapshot.count ?? 0;
+    } catch (e) {
+      debugPrint("Error fetching cars count: $e");
+      return 0;
+    }
+  }
+
+  // 🚀 OPTIMIZATION: Use server-side count() instead of downloading all documents
+  Future<int> _getUsersCount() async {
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .count()
+          .get();
+      return snapshot.count ?? 0;
+    } catch (e) {
+      debugPrint("Error fetching users count: $e");
+      return 0;
+    }
+  }
+
+  // 🚀 OPTIMIZATION: Use server-side aggregate() to calculate weighted average
+  Future<double> _getAverageRating() async {
+    try {
+      // In Dart, sum() is a top-level function exported by cloud_firestore
+      final snapshot = await FirebaseFirestore.instance
+          .collection('cars')
+          .aggregate(sum('rating_total'), sum('review_count'))
+          .get();
+
+      // Extract the values using getSum()
+      final totalScore = snapshot.getSum('rating_total') ?? 0.0;
+      final totalReviews = snapshot.getSum('review_count') ?? 0.0;
+
+      if (totalReviews == 0) return 0.0;
+      return totalScore / totalReviews;
+    } catch (e) {
+      debugPrint("Error fetching average rating: $e");
+      return 0.0;
+    }
   }
 
   @override
@@ -146,51 +205,18 @@ class _GetStartState extends State<GetStart>
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceAround,
                       children: [
-                        _buildLiveIntBadge(
-                          stream: FirebaseFirestore.instance
-                              .collection('cars')
-                              .snapshots()
-                              .map((snapshot) => snapshot.size),
+                        _buildFutureIntBadge(
+                          future: _carsCountFuture,
                           label: 'Cars',
                         ),
                         Container(width: 1, height: 38, color: AppTheme.border),
-                        _buildLiveIntBadge(
-                          stream: FirebaseFirestore.instance
-                              .collection('users')
-                              .snapshots()
-                              .map((snapshot) => snapshot.size),
+                        _buildFutureIntBadge(
+                          future: _usersCountFuture,
                           label: 'Users',
                         ),
                         Container(width: 1, height: 38, color: AppTheme.border),
-                        _buildLiveRatingBadge(
-                          stream: FirebaseFirestore.instance
-                              .collection('bookings')
-                              .snapshots()
-                              .map((snapshot) {
-                                final ratings = <double>[];
-
-                                for (final doc in snapshot.docs) {
-                                  final data = doc.data();
-                                  final raw = data['user_rating'];
-                                  if (raw is int) {
-                                    ratings.add(raw.toDouble());
-                                  } else if (raw is double) {
-                                    ratings.add(raw);
-                                  } else if (raw is String) {
-                                    final parsed = double.tryParse(raw.trim());
-                                    if (parsed != null) {
-                                      ratings.add(parsed);
-                                    }
-                                  }
-                                }
-
-                                if (ratings.isEmpty) return 0.0;
-                                final total = ratings.fold<double>(
-                                  0,
-                                  (sum, value) => sum + value,
-                                );
-                                return total / ratings.length;
-                              }),
+                        _buildFutureRatingBadge(
+                          future: _ratingFuture,
                           label: 'Rating',
                         ),
                       ],
@@ -267,27 +293,33 @@ class _GetStartState extends State<GetStart>
     );
   }
 
-  Widget _buildLiveIntBadge({
-    required Stream<int> stream,
+  Widget _buildFutureIntBadge({
+    required Future<int> future,
     required String label,
   }) {
-    return StreamBuilder<int>(
-      stream: stream,
+    return FutureBuilder<int>(
+      future: future,
       builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return _buildBadge("...", label);
+        }
         final count = snapshot.data ?? 0;
         return _buildBadge(_formatCompactCount(count), label);
       },
     );
   }
 
-  Widget _buildLiveRatingBadge({
-    required Stream<double> stream,
+  Widget _buildFutureRatingBadge({
+    required Future<double> future,
     required String label,
   }) {
-    return StreamBuilder<double>(
-      stream: stream,
+    return FutureBuilder<double>(
+      future: future,
       builder: (context, snapshot) {
-        final rating = snapshot.data ?? 0;
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return _buildBadge("...", label);
+        }
+        final rating = snapshot.data ?? 0.0;
         return _buildBadge(rating.toStringAsFixed(1), label);
       },
     );

@@ -23,6 +23,7 @@ class PaymentPage extends StatefulWidget {
 
 class _PaymentPageState extends State<PaymentPage> {
   static const String _defaultCurrency = 'INR';
+  static const String _fallbackRazorpayKeyId = 'rzp_test_SlCHgjb14m72d1';
   static const String _definedRazorpayKeyId = String.fromEnvironment(
     'RAZORPAY_KEY_ID',
   );
@@ -110,18 +111,44 @@ class _PaymentPageState extends State<PaymentPage> {
     );
   }
 
+  String get _effectiveRazorpayKeyId {
+    return _definedRazorpayKeyId.isNotEmpty
+        ? _definedRazorpayKeyId
+        : _fallbackRazorpayKeyId;
+  }
+
+  bool get _hasServerPaymentConfig =>
+      _createOrderUrl.isNotEmpty &&
+      _verifyPaymentUrl.isNotEmpty &&
+      _paymentFailureUrl.isNotEmpty;
+
+  Future<void> _openDirectRazorpay({String? orderId}) async {
+    final user = FirebaseAuth.instance.currentUser;
+    final options = {
+      'key': _effectiveRazorpayKeyId,
+      'amount': _toPaisa(widget.amount),
+      'name': 'Express Car',
+      'description': 'Booking ${widget.bookingId}',
+      'currency': _defaultCurrency,
+      'prefill': {
+        'email': user?.email ?? '',
+        'contact': user?.phoneNumber ?? '',
+      },
+      'notes': {
+        'booking_id': widget.bookingId,
+        if (orderId != null && orderId.isNotEmpty) 'order_id': orderId,
+      },
+    };
+
+    debugPrint('Opening Razorpay directly with options: $options');
+    _razorpay.open(options);
+  }
+
   Future<void> _startOnlinePayment() async {
     if (_isProcessing) return;
 
-    if (_createOrderUrl.isEmpty ||
-        _verifyPaymentUrl.isEmpty ||
-        _paymentFailureUrl.isEmpty) {
-      _showMessage(
-        'Missing payment URLs. Run with PAYMENT_* dart-defines.',
-        isError: true,
-      );
-      return;
-    }
+    final bool hasServerUrls = _hasServerPaymentConfig;
+    final createOrderUrl = _createOrderUrl;
 
     final amountInPaisa = _toPaisa(widget.amount);
     if (amountInPaisa <= 0) {
@@ -132,45 +159,66 @@ class _PaymentPageState extends State<PaymentPage> {
     setState(() => _isProcessing = true);
 
     try {
-      final orderPayload = await _postJson(
-        url: _createOrderUrl,
-        body: {
-          'booking_id': widget.bookingId,
-          'amount': amountInPaisa,
-          'currency': _defaultCurrency,
-        },
-      );
-
-      final orderId = orderPayload['order_id']?.toString().trim() ?? '';
-      final keyFromServer = orderPayload['key_id']?.toString().trim() ?? '';
-      final effectiveKeyId = keyFromServer.isNotEmpty
-          ? keyFromServer
-          : _definedRazorpayKeyId;
-
-      if (orderId.isEmpty || effectiveKeyId.isEmpty) {
-        throw Exception('Payment configuration incomplete.');
-      }
-
-      _createdOrderId = orderId;
-
       final user = FirebaseAuth.instance.currentUser;
-      final options = {
-        'key': effectiveKeyId,
-        'amount': amountInPaisa,
-        'name': 'Express Car',
-        'description': 'Booking ${widget.bookingId}',
-        'order_id': orderId,
-        'currency': _defaultCurrency,
-        'prefill': {
-          'email': user?.email ?? '',
-          'contact': user?.phoneNumber ?? '',
-        },
-        'notes': {'booking_id': widget.bookingId},
-      };
 
-      _razorpay.open(options);
+      if (hasServerUrls) {
+        // Create order on server and use returned order_id
+        final orderPayload = await _postJson(
+          url: createOrderUrl,
+          body: {
+            'booking_id': widget.bookingId,
+            'amount': amountInPaisa,
+            'currency': _defaultCurrency,
+          },
+        );
+
+        final orderId = orderPayload['order_id']?.toString().trim() ?? '';
+        final keyFromServer = orderPayload['key_id']?.toString().trim() ?? '';
+        final effectiveKeyId = keyFromServer.isNotEmpty
+            ? keyFromServer
+            : _definedRazorpayKeyId;
+
+        if (orderId.isEmpty || effectiveKeyId.isEmpty) {
+          throw Exception('Payment configuration incomplete.');
+        }
+
+        _createdOrderId = orderId;
+
+        final options = {
+          'key': effectiveKeyId,
+          'amount': amountInPaisa,
+          'name': 'Express Car',
+          'description': 'Booking ${widget.bookingId}',
+          'order_id': orderId,
+          'currency': _defaultCurrency,
+          'prefill': {
+            'email': user?.email ?? '',
+            'contact': user?.phoneNumber ?? '',
+          },
+          'notes': {'booking_id': widget.bookingId},
+        };
+
+        _razorpay.open(options);
+      } else {
+        await _openDirectRazorpay();
+      }
     } catch (error) {
-      _showMessage('Unable to start payment: $error', isError: true);
+      debugPrint(
+        'Server payment failed, falling back to direct Razorpay: $error',
+      );
+      if (hasServerUrls) {
+        try {
+          await _openDirectRazorpay();
+          return;
+        } catch (fallbackError) {
+          _showMessage(
+            'Unable to start payment: $fallbackError',
+            isError: true,
+          );
+        }
+      } else {
+        _showMessage('Unable to start payment: $error', isError: true);
+      }
       if (mounted) {
         setState(() => _isProcessing = false);
       }
@@ -179,27 +227,33 @@ class _PaymentPageState extends State<PaymentPage> {
 
   Future<void> _onPaymentSuccess(PaymentSuccessResponse response) async {
     try {
-      final orderId = response.orderId?.trim().isNotEmpty == true
-          ? response.orderId!.trim()
-          : (_createdOrderId ?? '');
+      final bool hasServerUrls = _hasServerPaymentConfig;
+      final verifyPaymentUrl = _verifyPaymentUrl;
 
-      if (orderId.isEmpty) {
-        throw Exception('Missing order id for verification.');
-      }
+      if (hasServerUrls) {
+        final orderId = response.orderId?.trim().isNotEmpty == true
+            ? response.orderId!.trim()
+            : (_createdOrderId ?? '');
 
-      await _postJson(
-        url: _verifyPaymentUrl,
-        body: {
-          'booking_id': widget.bookingId,
-          'razorpay_payment_id': response.paymentId ?? '',
-          'razorpay_order_id': orderId,
-          'razorpay_signature': response.signature ?? '',
-        },
-      );
+        if (orderId.isEmpty) {
+          throw Exception('Missing order id for verification.');
+        }
 
-      _showMessage('Payment verified successfully.');
-      if (mounted) {
-        Navigator.pop(context, true);
+        await _postJson(
+          url: verifyPaymentUrl,
+          body: {
+            'booking_id': widget.bookingId,
+            'razorpay_payment_id': response.paymentId ?? '',
+            'razorpay_order_id': orderId,
+            'razorpay_signature': response.signature ?? '',
+          },
+        );
+
+        _showMessage('Payment verified successfully.');
+        if (mounted) Navigator.pop(context, true);
+      } else {
+        _showMessage('Payment successful.');
+        if (mounted) Navigator.pop(context, true);
       }
     } catch (error) {
       _showMessage('Payment verification failed: $error', isError: true);
@@ -212,14 +266,17 @@ class _PaymentPageState extends State<PaymentPage> {
 
   Future<void> _onPaymentError(PaymentFailureResponse response) async {
     try {
-      await _postJson(
-        url: _paymentFailureUrl,
-        body: {
-          'booking_id': widget.bookingId,
-          'payment_id': '',
-          'reason': response.message ?? 'Payment failed',
-        },
-      );
+      final bool hasServerUrls = _hasServerPaymentConfig;
+      if (hasServerUrls) {
+        await _postJson(
+          url: _paymentFailureUrl,
+          body: {
+            'booking_id': widget.bookingId,
+            'payment_id': '',
+            'reason': response.message ?? 'Payment failed',
+          },
+        );
+      }
     } catch (_) {
       // UI already communicates failure; backend update best-effort.
     } finally {
